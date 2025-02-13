@@ -11,12 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#ifndef DB_IMPL_H
-#define DB_IMPL_H
+#include "mem_table.h"
 
-#include "db.h"
-namespace TurkeyDB {
-class DBImpl {};
-}  // namespace TurkeyDB
+#include <gtest/gtest.h>
 
-#endif  // DB_IMPL_H
+#include "mem_table_impl.h"
+#include "util.h"
+TEST(TESTDB, TEST_MEM_TABLE_IMPL) {
+  using namespace TurkeyDB;
+  auto table = SetTable();
+  table.Put(0,TurkeyDB::WRITE_TYPE::K_WRITE,"Hello", "World");
+  auto [val, status] = table.Get("Hello");
+  EXPECT_EQ(status.Ok(),true);
+  EXPECT_EQ(val,"World");
+
+  auto [val2, status2] = table.Get("Apple");
+  EXPECT_EQ(status.Ok(),false);
+  EXPECT_EQ(val,"");
+}

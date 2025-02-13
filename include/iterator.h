@@ -11,31 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#ifndef DB_H
-#define DB_H
-#include <memory>
-#include <string_view>
-#include <tuple>
-
-#include "util.h"
-
+#ifndef ITERATOR_H
+#define ITERATOR_H
 namespace TurkeyDB {
-
-class DB {
- public:
-  virtual ~DB() = default;
-
-  virtual Status Put(std::string_view key, std::string_view value) = 0;
-  virtual Status Del(std::string_view key) = 0;
-  virtual Status Get(std::string_view key) = 0;
+class Iterator {
 
 };
-
-// the main function to create or open an existed db file by name.
-static std::tuple<std::shared_ptr<DB>, Status> Open(std::string_view name) {
-  return std::make_tuple(nullptr, Status{STATUS_TYPE::K_NOT_FOUND});
 }
 
-}  // namespace TurkeyDB
-
-#endif  // DB_H
+#endif  // ITERATOR_H
