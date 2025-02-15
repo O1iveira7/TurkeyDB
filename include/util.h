@@ -15,6 +15,7 @@
 #define UTIL_H
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <string>
 namespace TurkeyDB {
 
@@ -40,14 +41,14 @@ class CodingHelper {
   CodingHelper() = delete;
 
   static void Put64BitsTo(std::string *dst, uint64_t val) {
-    char buf[sizeof(val)];
+    char buf[sizeof(val) + 1];
     Encode64BitsTo(buf, val);
-    dst->append(buf);
+    dst->append(buf,sizeof(buf));
   }
   static void Encode64BitsTo(char *dst, uint64_t val) {
     std::memcpy(dst, &val, sizeof(val));
   }
-  static uint64_t Decode64Bits(char *src) {
+  static uint64_t Decode64Bits(const char *src) {
     uint64_t val;
     std::memcpy(&val, src, sizeof(val));
     return val;
@@ -56,32 +57,38 @@ class CodingHelper {
   static void Put32BitsTo(std::string *dst, uint32_t val) {
     char buf[sizeof(val)];
     Encode32BitsTo(buf, val);
-    dst->append(buf);
+    dst->append(buf,sizeof(buf));
   }
   static void Encode32BitsTo(char *dst, uint32_t val) {
     std::memcpy(dst, &val, sizeof(val));
   }
-  static uint32_t Decode32Bits(char *src) {
+  static uint32_t Decode32Bits(const char *src) {
     uint32_t val;
     std::memcpy(&val, src, sizeof(val));
     return val;
   }
 
-  static void Put16BitsTo(std::string *dst, uint16_t val) {
-    char buf[sizeof(val)];
-    Encode16BitsTo(buf, val);
-    dst->append(buf);
-  }
-  static void Encode16BitsTo(char *dst, uint16_t val) {
-    std::memcpy(dst, &val, sizeof(val));
-  }
-  static uint16_t Decode16Bits(char *src) {
-    uint16_t val;
-    std::memcpy(&val, src, sizeof(val));
-    return val;
-  }
-};
+  // static void Put16BitsTo(std::string *dst, uint16_t val) {
+  //   char buf[sizeof(val)];
+  //   Encode16BitsTo(buf, val);
+  //   dst->append(buf);
+  // }
+  // static void Encode16BitsTo(char *dst, uint16_t val) {
+  //   std::memcpy(dst, &val, sizeof(val));
+  // }
+  // static uint16_t Decode16Bits(const char *src) {
+  //   uint16_t val;
+  //   std::memcpy(&val, src, sizeof(val));
+  //   return val;
+  // }
+};  // end of CodingHelper
+
+
+
+
 }  // namespace Util
+
+
 
 }  // namespace TurkeyDB
 #endif  // UTIL_H
