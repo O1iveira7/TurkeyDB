@@ -28,18 +28,53 @@ namespace TurkeyDB {
 // cause the scenario is to compare use key not the entire mem table key
 class SetTable : MemTable {
  private:
-
   std::mutex mu_;
-  std::set<std::string> inner_;
+  std::set<MemTableKey> inner_;
 
  public:
-  class MemTableIterator : Iterator {};
+  // // todo considering concurrency problems of MemTableIterator
+  // class MemTableIterator : Iterator {
+  //  public:
+  //   explicit MemTableIterator(std::shared_ptr<SetTable> shared_table,
+  //                             std::shared_ptr<const ReadOption>);
+  //   ~MemTableIterator() override = default;
+  //
+  //   bool Valid() const override;
+  //
+  //   void SeekToFirst() override;
+  //   void SeekToLast() override;
+  //   // Position at the first key in the source that is at or past target.
+  //   void Seek(std::string_view target) override;
+  //   void Next() override;
+  //   void Prev() override;
+  //   [[nodiscard]] std::string_view Key() const override;
+  //   [[nodiscard]] std::string_view Value() const override;
+  //   Status GetStatus() const override;
+  //
+  //  private:
+  //   friend class MemTableIterator;
+  //
+  //   Status status_;
+  //   std::shared_ptr<SetTable> table_;
+  //   std::set<MemTableKey>::iterator iter_;
+  //   std::shared_ptr<const ReadOption> rd_opt_;
+  // };  // end of MemTableIterator
 
-  std::tuple<std::string_view, Status> Get(std::string_view key) override;
-  Status Put(uint64_t seq,WRITE_TYPE type,std::string_view key, std::string_view value) override;
-  SharedIterPointer NewIterator() override;
-
+  std::tuple<std::string_view, Status> Get(
+      std::string_view key, std::shared_ptr<const ReadOption> rd_opt) override;
+  Status Put(uint64_t seq, std::string_view key,
+             std::string_view value) override;
+  Status Del(uint64_t seq, std::string_view key) override;
+  //Iterator* NewIterator(std::shared_ptr<const ReadOption>) override;
   ~SetTable() override = default;
+
+  std::set<MemTableKey>::iterator GetIter() { return inner_.begin(); }
+
+  std::set<MemTableKey>::iterator End() { return inner_.end(); }
+
+ private:
+  virtual Status WriteToInner(uint64_t seq, WRITE_TYPE type,
+                              std::string_view key, std::string_view value);
 };
 
 // TODO

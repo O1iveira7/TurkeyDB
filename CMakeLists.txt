@@ -13,6 +13,8 @@ add_library(TurkeyDB STATIC
         include/iterator.h
         src/mem_table_impl.cpp
         src/mem_table_impl.h
+        src/File.cpp
+        src/File.h
 )
 
 # 设置 TurkeyDB 库的头文件搜索路径

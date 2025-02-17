@@ -13,6 +13,8 @@
 // limitations under the License.
 #ifndef MEM_TABLE_H
 #define MEM_TABLE_H
+#include <assert.h>
+
 #include <memory>
 #include <mutex>
 #include <set>
@@ -42,9 +44,17 @@ class MemTableKey {
   WRITE_TYPE ExtractWriteType() const;
   std::string_view ExtractValue() const;
 
+  void PrintRep() const {
+    for (size_t i = 0; i < rep_.size(); i++) {
+      printf("%02x ", static_cast<uint8_t>(rep_.data()[i]));
+    }
+    printf("\n");
+  }
+
  private:
-  void EncodeKVToMemEntry(uint64_t seq, WRITE_TYPE type, std::string_view key,
-                          std::string_view value, std::string *dst);
+  static void EncodeKVToMemEntry(uint64_t seq, WRITE_TYPE type,
+                                 std::string_view key, std::string_view value,
+                                 std::string *dst);
 
   std::string rep_;  // inner buf.The name rep is copied from leveldb.I don't
                      // know the meaning hh
@@ -85,11 +95,12 @@ inline WRITE_TYPE MemTableKey::ExtractWriteType() const {
 }
 
 inline std::string_view MemTableKey::ExtractValue() const {
-  auto key_len = Util::CodingHelper::Decode32Bits(rep_.data());
-  auto val_start = rep_.data() + 4 + key_len;
-  auto val_len =
-      Util::CodingHelper::Decode32Bits(std::string_view(val_start, 4).data());
-  return {val_start + 4, val_len};
+  auto internal_key_size = Util::CodingHelper::Decode32Bits(rep_.data());
+  auto val_offset = 4 + internal_key_size + 4;
+  auto val_size =
+      Util::CodingHelper::Decode32Bits(rep_.data() + 4 + internal_key_size);
+  // assert(rep_.size() >= 4 + internal_key_size +4 + val_size);
+  return std::string_view(rep_.data() + val_offset, val_size);
 }
 
 inline void MemTableKey::EncodeKVToMemEntry(uint64_t seq, WRITE_TYPE type,
@@ -104,6 +115,7 @@ inline void MemTableKey::EncodeKVToMemEntry(uint64_t seq, WRITE_TYPE type,
   Util::CodingHelper::Put32BitsTo(dst, value.size());  // val size 4B
   dst->append(value);
 }
+
 // userkey：key
 // internal_key:InternalKey= UserKey+ 8bytes SequenceNumber 7b + ValueType 1b
 // memtable:|internal_key_size2B|value_size2B|internal_key|sequence(7b)type(1b)|value
@@ -111,39 +123,21 @@ class MemTable {
  public:
   MemTable() = default;
   virtual ~MemTable() = default;
-  using SharedIterPointer = std::shared_ptr<Iterator>;
 
   // Only Get/Put is supported
   // cause delete in LSM is represented as a put with delete tag
-  virtual std::tuple<std::string_view, Status> Get(std::string_view key) = 0;
-  virtual Status Put(uint64_t seq, WRITE_TYPE type, std::string_view key,
+  virtual std::tuple<std::string_view, Status> Get(
+      std::string_view key, std::shared_ptr<const ReadOption> rd_opt) = 0;
+  virtual Status Put(uint64_t seq, std::string_view key,
                      std::string_view value) = 0;
-
-  virtual SharedIterPointer NewIterator() = 0;
+  virtual Status Del(uint64_t seq, std::string_view key) = 0;
+  //virtual Iterator* NewIterator(std::shared_ptr<const ReadOption>) = 0;
 
  private:
-};
+  virtual Status WriteToInner(uint64_t seq, WRITE_TYPE type,
+                              std::string_view key, std::string_view value) = 0;
 
-// extract user key from memtable key
-struct UserKeyCompartor {
-  std::tuple<std::string_view, uint64_t> ExtractUserKeyAndSeq(
-      std::string_view str) const {
-    auto len = Util::CodingHelper::Decode32Bits(str.data());
-    auto internal_key = std::string_view(str.data() + 4, len);
-    auto tmp = Util::CodingHelper::Decode64Bits(
-        internal_key.substr(len - 8, 8).data());
-    auto seq = tmp >> 1;
-    return {internal_key.substr(0, len - 8), seq};
-  }
-
-  bool operator()(const std::string &lhs, const std::string &rhs) const {
-    auto [key1, seq1] = ExtractUserKeyAndSeq(lhs);
-    auto [key2, seq2] = ExtractUserKeyAndSeq(rhs);
-    if (key1 == key2) {
-      return seq1 < seq2;
-    }
-    return key1 < key2;
-  }
+ private:
 };
 
 }  // namespace TurkeyDB

@@ -17,15 +17,24 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <memory>
 namespace TurkeyDB {
 
-enum class WRITE_TYPE : uint8_t { K_WRITE = 0, K_DELETE = 1 };
-enum class STATUS_TYPE { k_OK, K_NOT_FOUND };
+enum class WRITE_TYPE : uint8_t { K_WRITE = 0, K_DELETE = 1, K_SEARCH };
+enum class STATUS_TYPE { k_OK, K_NOT_FOUND, K_ERROR };
 
 struct Status {
   [[nodiscard]] bool Ok() const { return curr_status_ == STATUS_TYPE::k_OK; }
   STATUS_TYPE curr_status_;
 };
+
+struct ReadOption {
+  uint64_t seq_num_;
+};
+
+inline std::shared_ptr<ReadOption> NewReadOption(uint64_t seq) {
+  return std::make_shared<ReadOption>(seq);
+}
 
 namespace Config {
 static uint64_t MEM_SIZE_LIMIT = 1 << 11;  // in Bytes 2MB
@@ -41,9 +50,9 @@ class CodingHelper {
   CodingHelper() = delete;
 
   static void Put64BitsTo(std::string *dst, uint64_t val) {
-    char buf[sizeof(val) + 1];
+    char buf[sizeof(val)];
     Encode64BitsTo(buf, val);
-    dst->append(buf,sizeof(buf));
+    dst->append(buf, sizeof(buf));
   }
   static void Encode64BitsTo(char *dst, uint64_t val) {
     std::memcpy(dst, &val, sizeof(val));
@@ -57,7 +66,7 @@ class CodingHelper {
   static void Put32BitsTo(std::string *dst, uint32_t val) {
     char buf[sizeof(val)];
     Encode32BitsTo(buf, val);
-    dst->append(buf,sizeof(buf));
+    dst->append(buf, sizeof(buf));
   }
   static void Encode32BitsTo(char *dst, uint32_t val) {
     std::memcpy(dst, &val, sizeof(val));
@@ -83,12 +92,7 @@ class CodingHelper {
   // }
 };  // end of CodingHelper
 
-
-
-
 }  // namespace Util
-
-
 
 }  // namespace TurkeyDB
 #endif  // UTIL_H
