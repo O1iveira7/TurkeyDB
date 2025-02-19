@@ -37,7 +37,16 @@ class MemTableKey {
   MemTableKey &operator=(const MemTableKey &) = default;
   ~MemTableKey() = default;
 
-  auto operator<=>(const MemTableKey &) const;
+  std::strong_ordering operator<=>(const MemTableKey &) const;
+  // bool operator<(const MemTableKey &rhs) const {
+  //   if (ExtractUserkey() == rhs.ExtractUserkey())
+  //     return ExtractSeqNum() < rhs.ExtractSeqNum();
+  //   return ExtractUserkey() < rhs.ExtractUserkey();
+  // }
+  // bool operator==(const MemTableKey &rhs) const {
+  //   return ExtractUserkey() == rhs.ExtractUserkey() &&
+  //          ExtractSeqNum() == rhs.ExtractSeqNum();
+  // }
 
   std::string_view ExtractUserkey() const;
   uint64_t ExtractSeqNum() const;
@@ -65,8 +74,10 @@ inline MemTableKey::MemTableKey(uint64_t seq, WRITE_TYPE type,
   EncodeKVToMemEntry(seq, type, key, value, &rep_);
 }
 
-inline auto MemTableKey::operator<=>(const MemTableKey &rhs) const {
-  if (auto r = ExtractUserkey() <=> rhs.ExtractUserkey(); r != 0) return r;
+inline std::strong_ordering MemTableKey::operator<=>(
+    const MemTableKey &rhs) const {
+  if (auto r = ExtractUserkey() <=> rhs.ExtractUserkey(); r != nullptr)
+    return r;
   return ExtractSeqNum() <=> rhs.ExtractSeqNum();
 }
 
@@ -131,11 +142,8 @@ class MemTable {
   virtual Status Put(uint64_t seq, std::string_view key,
                      std::string_view value) = 0;
   virtual Status Del(uint64_t seq, std::string_view key) = 0;
-  //virtual Iterator* NewIterator(std::shared_ptr<const ReadOption>) = 0;
-
- private:
-  virtual Status WriteToInner(uint64_t seq, WRITE_TYPE type,
-                              std::string_view key, std::string_view value) = 0;
+  virtual std::shared_ptr<Iterator> NewIterator(
+      std::shared_ptr<const ReadOption>) const = 0;
 
  private:
 };

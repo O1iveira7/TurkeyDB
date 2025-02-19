@@ -41,10 +41,10 @@ std::tuple<std::string_view, TurkeyDB::Status> TurkeyDB::SetTable::Get(
   //     l = mid + 1;
   // }
 
-  auto iter = std::find_if(inner_.begin(), inner_.end(),
-                           [key](const MemTableKey& curr) -> auto {
-                             return curr.ExtractUserkey() == key;
-                           });
+  auto iter =
+      std::ranges::find_if(inner_, [key](const MemTableKey& curr) -> auto {
+        return curr.ExtractUserkey() == key;
+      });
   if (iter == inner_.end()) return {"", Status{STATUS_TYPE::K_NOT_FOUND}};
 
   auto prev = iter;
@@ -66,10 +66,10 @@ TurkeyDB::Status TurkeyDB::SetTable::Del(uint64_t seq, std::string_view key) {
   return WriteToInner(seq, WRITE_TYPE::K_DELETE, key, "");
 }
 
-// TurkeyDB::Iterator* TurkeyDB::SetTable::NewIterator(
-//     std::shared_ptr<const ReadOption> rd) {
-//   //
-// }
+std::shared_ptr<TurkeyDB::Iterator> TurkeyDB::SetTable::NewIterator(
+    std::shared_ptr<const ReadOption> rd) const {
+  return std::make_shared<MemTableIterator>(this, rd);
+}
 
 TurkeyDB::Status TurkeyDB::SetTable::WriteToInner(uint64_t seq, WRITE_TYPE type,
                                                   std::string_view key,
@@ -83,64 +83,85 @@ TurkeyDB::Status TurkeyDB::SetTable::WriteToInner(uint64_t seq, WRITE_TYPE type,
     return Status{STATUS_TYPE::K_ERROR};
 }
 
-// TurkeyDB::SetTable::MemTableIterator::MemTableIterator(
-//     std::shared_ptr<SetTable> shared_table,
-//     std::shared_ptr<const ReadOption> rd)
-//     : table_(std::move(shared_table)),
-//       iter_(table_->inner_.begin()),
-//       rd_opt_(rd) {}
-//
-// bool TurkeyDB::SetTable::MemTableIterator::Valid() const {
-//   return table_ != nullptr && iter_ != table_->inner_.end();
-// }
-//
-// void TurkeyDB::SetTable::MemTableIterator::SeekToFirst() {
-//   iter_ = table_->inner_.begin();
-// }
-// void TurkeyDB::SetTable::MemTableIterator::SeekToLast() {
-//   auto iter = table_->inner_.begin();
-//   auto end = table_->inner_.end();
-//   while (iter != end) {
-//     iter_ = iter;
-//     ++iter;
-//   }
-// }
-//
-// void TurkeyDB::SetTable::MemTableIterator::Seek(std::string_view target) {
-//   // todo
-//   auto curr_iter = std::upper_bound(
-//       table_->inner_.begin(), table_->inner_.end(),
-//       MemTableKey(0, WRITE_TYPE::K_SEARCH, target, ""),
-//       [](const MemTableKey& lhs, const MemTableKey& rhs) { return lhs < rhs; });
-//   if (curr_iter == table_->inner_.end()) {
-//     status_ = {STATUS_TYPE::K_NOT_FOUND};
-//     return;
-//   }
-//   iter_ = curr_iter;
-//   ++curr_iter;
-//   while (curr_iter != table_->inner_.end()) {
-//     if (curr_iter->ExtractUserkey() != target ||
-//         curr_iter->ExtractSeqNum() > rd_opt_->seq_num_) {
-//       break;
-//     }
-//     iter_ = curr_iter;
-//   }
-// }
-//
-// void TurkeyDB::SetTable::MemTableIterator::Next() { ++iter_; }
-// void TurkeyDB::SetTable::MemTableIterator::Prev() { --iter_; }
-// std::string_view TurkeyDB::SetTable::MemTableIterator::Key() const {
-//   if (iter_ != table_->inner_.end()) {
-//     return iter_->ExtractUserkey();
-//   }
-//   return "";
-// }
-// std::string_view TurkeyDB::SetTable::MemTableIterator::Value() const {
-//   if (iter_ != table_->inner_.end()) {
-//     return iter_->ExtractValue();
-//   }
-//   return "";
-// }
-// TurkeyDB::Status TurkeyDB::SetTable::MemTableIterator::GetStatus() const {
-//   return status_;
-// }
+bool TurkeyDB::SetTable::SetTableIterator::Valid() const {
+  return table_ != nullptr && iter_ != table_->inner_.end();
+}
+
+void TurkeyDB::SetTable::SetTableIterator::SeekToFirst() {
+  auto beg = table_->inner_.begin();
+  auto end = table_->inner_.end();
+  while (beg != end) {
+    if (iter_->ExtractSeqNum() <= rd_opt_->seq_num_) break;
+  }
+  iter_ = beg;
+}
+
+void TurkeyDB::SetTable::SetTableIterator::SeekToLast() {
+  auto iter = table_->inner_.begin();
+  auto end = table_->inner_.end();
+  while (iter != end) {
+    if (iter->ExtractSeqNum() <= rd_opt_->seq_num_) iter_ = iter;
+    ++iter;
+  }
+}
+
+void TurkeyDB::SetTable::SetTableIterator::Seek(std::string_view target) {
+  // todo
+  auto curr_iter = std::ranges::find_if(
+      table_->inner_, [target](const MemTableKey& curr) -> auto {
+        return curr.ExtractUserkey() == target;
+      });
+  if (curr_iter == table_->inner_.end() ||
+      curr_iter->ExtractSeqNum() > rd_opt_->seq_num_) {
+    status_ = {STATUS_TYPE::K_NOT_FOUND};
+    return;
+  }
+  iter_ = curr_iter;
+  ++curr_iter;
+  while (curr_iter != table_->inner_.end()) {
+    if (curr_iter->ExtractUserkey() != target ||
+        curr_iter->ExtractSeqNum() > rd_opt_->seq_num_) {
+      break;
+    }
+    iter_ = curr_iter;
+    ++curr_iter;
+  }
+}
+
+void TurkeyDB::SetTable::SetTableIterator::Next() {
+  auto end = table_->inner_.end();
+  auto curr = iter_;
+  ++curr;
+  while (curr != end) {
+    if (curr->ExtractSeqNum() <= rd_opt_->seq_num_) break;
+    ++curr;
+  }
+  iter_ = curr;
+}
+
+void TurkeyDB::SetTable::SetTableIterator::Prev() {
+  auto beg = table_->inner_.begin();
+  auto curr = iter_;
+  --curr;
+  while (curr != beg) {
+    if (curr->ExtractSeqNum() <= rd_opt_->seq_num_) break;
+    --curr;
+  }
+  iter_ = curr;
+}
+
+std::string_view TurkeyDB::SetTable::SetTableIterator::Key() const {
+  if (iter_ != table_->inner_.end()) {
+    return iter_->ExtractUserkey();
+  }
+  return "";
+}
+std::string_view TurkeyDB::SetTable::SetTableIterator::Value() const {
+  if (iter_ != table_->inner_.end()) {
+    return iter_->ExtractValue();
+  }
+  return "";
+}
+TurkeyDB::Status TurkeyDB::SetTable::SetTableIterator::GetStatus() const {
+  return status_;
+}
