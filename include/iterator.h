@@ -1,87 +1,85 @@
-// Copyright (c) 2011 The LevelDB Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file. See the AUTHORS file for names of contributors.
-//
-// An iterator yields a sequence of key/value pairs from a source.
-// The following class defines the interface.  Multiple implementations
-// are provided by this library.  In particular, iterators are provided
-// to access the contents of a Table or a DB.
-//
-// Multiple threads can invoke const methods on an Iterator without
-// external synchronization, but if any of the threads may call a
-// non-const method, all threads accessing the same Iterator must use
-// external synchronization.
+#pragma once
 
-// Copyright (c) 2025 Oliveira
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-#ifndef ITERATOR_H
-#define ITERATOR_H
-#include "util.h"
-namespace TurkeyDB {
-// copy from leveldb
-class Iterator {
-public:
-  Iterator() = default;
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <queue>
+#include <string>
+#include <utility>
 
-  Iterator(const Iterator&) = delete;
-  Iterator& operator=(const Iterator&) = delete;
-
-  virtual ~Iterator() = default;
-
-  // An iterator is either positioned at a key/value pair, or
-  // not valid.  This method returns true iff the iterator is valid.
-  virtual bool Valid() const = 0;
-
-  // Position at the first key in the source.  The iterator is Valid()
-  // after this call iff the source is not empty.
-  virtual void SeekToFirst() = 0;
-
-  // Position at the last key in the source.  The iterator is
-  // Valid() after this call iff the source is not empty.
-  virtual void SeekToLast() = 0;
-
-  // Position at the first key in the source that is at or past target.
-  // The iterator is Valid() after this call iff the source contains
-  // an entry that comes at or past target.
-  virtual void Seek(std::string_view target) = 0;
-
-  // Moves to the next entry in the source.  After this call, Valid() is
-  // true iff the iterator was not positioned at the last entry in the source.
-  // REQUIRES: Valid()
-  virtual void Next() = 0;
-
-  // Moves to the previous entry in the source.  After this call, Valid() is
-  // true iff the iterator was not positioned at the first entry in source.
-  // REQUIRES: Valid()
-  virtual void Prev() = 0;
-
-  // Return the key for the current entry.  The underlying storage for
-  // the returned slice is valid only until the next modification of
-  // the iterator.
-  // REQUIRES: Valid()
-  virtual std::string_view Key() const = 0;
-
-  // Return the value for the current entry.  The underlying storage for
-  // the returned slice is valid only until the next modification of
-  // the iterator.
-  virtual std::string_view Value() const = 0;
-
-  // If an error has occurred, return it.  Else return an ok status.
-  virtual Status GetStatus() const = 0;
-
- private:
+enum class IteratorType {
+  SkipListIterator,
+  MemTableIterator,
+  SstIterator,
+  HeapIterator,
+  TwoMergeIterator,
+  ConcactIterator,
+  LevelIterator,
 };
-}
 
-#endif  // ITERATOR_H
+class BaseIterator {
+public:
+  using value_type = std::pair<std::string, std::string>;
+  using pointer = value_type *;
+  using reference = value_type &;
+
+  virtual BaseIterator &operator++() = 0;
+  virtual bool operator==(const BaseIterator &other) const = 0;
+  virtual bool operator!=(const BaseIterator &other) const = 0;
+  virtual value_type operator*() const = 0;
+  virtual IteratorType get_type() const = 0;
+  virtual uint64_t get_tranc_id() const = 0;
+  virtual bool is_end() const = 0;
+  virtual bool is_valid() const = 0;
+};
+
+class SstIterator;
+struct SearchItem {
+  std::string key_;
+  std::string value_;
+  uint64_t tranc_id_;
+  int idx_;
+  int level_; // 来自sst的level
+
+  SearchItem() = default;
+  SearchItem(std::string k, std::string v, int i, int l, uint64_t tranc_id)
+      : key_(std::move(k)), value_(std::move(v)), idx_(i), level_(l),
+        tranc_id_(tranc_id) {}
+};
+
+bool operator<(const SearchItem &a, const SearchItem &b);
+bool operator>(const SearchItem &a, const SearchItem &b);
+bool operator==(const SearchItem &a, const SearchItem &b);
+
+class HeapIterator : public BaseIterator {
+  friend class SstIterator;
+
+public:
+  HeapIterator() = default;
+  HeapIterator(std::vector<SearchItem> item_vec, uint64_t max_tranc_id);
+  pointer operator->() const;
+  virtual value_type operator*() const override;
+  BaseIterator &operator++() override;
+  virtual bool operator==(const BaseIterator &other) const override;
+  virtual bool operator!=(const BaseIterator &other) const override;
+
+  virtual IteratorType get_type() const override;
+  virtual uint64_t get_tranc_id() const override;
+  virtual bool is_end() const override;
+  virtual bool is_valid() const override;
+
+private:
+  bool top_value_legal() const;
+
+  // 跳过当前不可见事务的id (如果开启了事务功能)
+  void skip_by_tranc_id();
+
+  void update_current() const;
+
+private:
+  std::priority_queue<SearchItem, std::vector<SearchItem>,
+                      std::greater<SearchItem>>
+      items;
+  mutable std::shared_ptr<value_type> current; // 用于存储当前元素
+  uint64_t max_tranc_id_ = 0;
+};
