@@ -19,6 +19,7 @@ enum class IteratorType {
 
 class BaseIterator {
 public:
+  // why pair<str,str>??
   using value_type = std::pair<std::string, std::string>;
   using pointer = value_type *;
   using reference = value_type &;

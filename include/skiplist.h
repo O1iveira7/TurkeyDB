@@ -23,7 +23,7 @@ struct SkipListNode {
   std::vector<std::shared_ptr<SkipListNode>>
       forward_;  // 指向不同层级的下一个节点的指针数组
   std::vector<std::weak_ptr<SkipListNode>>
-      backward_;  // 指向不同层级的上一个节点的指针数组?
+      backward_;  // 指向不同层级的上一个节点的指针数组
   SkipListNode(const std::string &k, const std::string &v, int level,
                uint64_t tranc_id)
       : key_(k),
@@ -81,9 +81,9 @@ class SkipListIterator : public BaseIterator {
 
  private:
   std::shared_ptr<SkipListNode> current;
-  // 每个迭代器有自己的锁？应该是整个skiplist公用一个..
+  // 每个迭代器有自己的锁？应该是整个skiplist公用一个..????
   std::shared_ptr<std::shared_lock<std::shared_mutex>>
-      lock;  // 持有读锁, 整个迭代器有效期间都持有读锁
+      lock;  // 持有读锁, 整个迭代器有效期间都持有读锁 // TODO 感觉有问题
 };
 
 class SkipList {
