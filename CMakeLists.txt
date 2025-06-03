@@ -90,6 +90,7 @@ add_executable(
         test/test_skiplist.cpp
         test/test_block.cpp
         test/test_sstable.cpp
+        test/test_memtable.cpp
 )
 
 target_link_libraries(

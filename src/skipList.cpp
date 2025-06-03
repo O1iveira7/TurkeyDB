@@ -6,6 +6,7 @@
 #include <tuple>
 #include <utility>
 
+
 BaseIterator &SkipListIterator::operator++() {
   if (current) {
     // skiplist
@@ -82,7 +83,6 @@ void SkipList::put(const std::string &key, const std::string &value,
   }
 
   curr = curr->forward_[0];
-  // tranc_id != ,for mvcc
   if (curr != nullptr && curr->key_ == key && curr->tranc_id_ == tranc_id) {
     size_bytes -= curr->value_.size() - value.size();
     curr->value_ = value;
@@ -98,6 +98,8 @@ void SkipList::put(const std::string &key, const std::string &value,
 
   for (auto i = current_level - 1; i >= 0; i--) {
     bool need_update = false;
+    // 当new_level > curr level的时候，必定更新
+    // new_level < curr level的时候，只更新新节点level
     if (i <= new_level - 1) {
       need_update = true;
     }
@@ -123,14 +125,24 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
     }
   }
 
+  // todo support tranc_id
   curr = curr->forward_[0];
-  while (curr != nullptr && curr->key_ == key && curr->tranc_id_ > tranc_id) {
-    curr = curr->forward_[0];
+  if (tranc_id == 0) {
+    // no tranc
+    if (curr != nullptr && curr->key_ == key) {
+      return SkipListIterator{curr};
+    }
+  } else {
+    // tranc
+    while (curr != nullptr && curr->key_ == key && curr->tranc_id_ > tranc_id) {
+      curr = curr->forward_[0];
+    }
+
+    if (curr != nullptr && curr->key_ == key && curr->tranc_id_ <= tranc_id) {
+      return SkipListIterator{curr};
+    }
   }
 
-  if (curr != nullptr && curr->key_ == key && curr->tranc_id_ <= tranc_id) {
-    return SkipListIterator{curr};
-  }
   return SkipListIterator{};
 }
 
@@ -140,6 +152,7 @@ SkipListIterator SkipList::get(const std::string &key, uint64_t tranc_id) {
 void SkipList::remove(const std::string &key) {
   auto curr = head;
   std::vector<std::shared_ptr<SkipListNode>> prev_vec(max_level, nullptr);
+  // 找到要删除节点的每层的前一个
   for (auto i = current_level - 1; i >= 0; i--) {
     while (curr->forward_[i] != nullptr && curr->forward_[i]->key_ < key) {
       curr = curr->forward_[i];
@@ -149,10 +162,12 @@ void SkipList::remove(const std::string &key) {
   // curr其实是要查找key节点的前一个
   auto prev_level = static_cast<int>(curr->forward_.size());
   curr = curr->forward_[0];
+  // 要删除的节点不在skiplist中
   if (curr == nullptr || curr->key_ != key) return;
   size_bytes -= curr->key_.size() + curr->value_.size() + sizeof(uint64_t);
   auto curr_level = static_cast<int>(curr->forward_.size());
   auto nxt = curr->forward_[0];  // 要删除节点的后一个
+  // 要删除的节点是最后一个节点
   if (nxt == nullptr) {
     for (int i = curr_level - 1; i >= 0; i--) {
       prev_vec[i]->forward_[i] = nullptr;
@@ -160,9 +175,22 @@ void SkipList::remove(const std::string &key) {
     return;
   }
   auto nxt_level = static_cast<int>(nxt->forward_.size());
+  // nxt_level上面的可能成为了dangling节点 比如 要删除的节点level为4，nxt为2
+  for (int i = curr_level - 1; i >= nxt_level; i--) {
+    if (prev_vec[i]->forward_[i] == curr) {
+      prev_vec[i]->forward_[i] = curr->forward_[i];
+      if (curr->forward_[i] != nullptr)
+        curr->forward_[i]->set_backward(i, prev_vec[i]);
+    }
+  }
+
   for (int i = nxt_level - 1; i >= 0; i--) {
     prev_vec[i]->forward_[i] = nxt;
     nxt->set_backward(i, prev_vec[i]);
+  }
+
+  while (curr_level > 1 && head->forward_[curr_level - 1] == nullptr) {
+    curr_level--;
   }
 }
 
@@ -311,7 +339,7 @@ void SkipList::print_skiplist() {
     std::cout << "Level " << level << ": ";
     auto current = head->forward_[level];
     while (current) {
-      std::cout << current->key_;
+      std::cout << current->key_ << "-" << current->tranc_id_;
       current = current->forward_[level];
       if (current) {
         std::cout << " -> ";

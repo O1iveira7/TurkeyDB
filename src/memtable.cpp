@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "iterator.h"
 #include "consts.h"
+#include "iterator.h"
 #include "skiplist.h"
 #include "sst.h"
 
@@ -32,11 +32,10 @@ void MemTable::put_(const std::string &key, const std::string &value,
 
 void MemTable::put(const std::string &key, const std::string &value,
                    uint64_t tranc_id) {
-  std::unique_lock<std::shared_mutex> lock1(cur_mtx);
+  std::unique_lock lock1(cur_mtx);
   put_(key, value, tranc_id);
-  if (current_table->get_size() > LSM_PER_MEM_SIZE_LIMIT) {
-    // 冻结当前表还需要获取frozen_mtx的写锁
-    std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
+  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+    std::unique_lock lock2(frozen_mtx);
     frozen_cur_table_();
   }
 }
@@ -44,159 +43,138 @@ void MemTable::put(const std::string &key, const std::string &value,
 void MemTable::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
-  std::unique_lock<std::shared_mutex> lock1(cur_mtx);
-  for (auto &[k, v] : kvs) {
+  std::unique_lock lock1(cur_mtx);
+  for (const auto &[k, v] : kvs) {
     put_(k, v, tranc_id);
   }
-  if (current_table->get_size() > LSM_PER_MEM_SIZE_LIMIT) {
-    // 冻结当前表还需要获取frozen_mtx的写锁
-    std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
+  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+    std::unique_lock lock2(frozen_mtx);
     frozen_cur_table_();
   }
 }
 
 SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
-  // 检查当前活跃的memtable
-  auto result = current_table->get(key, tranc_id);
-  if (result.is_valid()) {
-    // 只要找到了 key, 不管 value 是否为空都返回
-    return result;
-  }
-
-  // 没有找到，返回空
-  return SkipListIterator{};
+  auto res = current_table->get(key, tranc_id);
+  if (res.is_valid()) return res;
+  return {};
 }
 
 SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
-  // 检查frozen memtable
-  for (auto &tabe : frozen_tables) {
-    auto result = tabe->get(key, tranc_id);
-    if (result.is_valid()) {
-      return result;
-    }
+  for (const auto &curr : frozen_tables) {
+    auto res = curr->get(key, tranc_id);
+    if (res.is_valid()) return res;
   }
-
-  // 都没有找到，返回空
-  return SkipListIterator{};
-}
-
-SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
-  // 先获取当前活跃表的锁
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  auto cur_res = cur_get_(key, tranc_id);
-  if (cur_res.is_valid()) {
-    return cur_res;
-  }
-  // 活跃表没有找到，再获取冻结表的锁
-  slock1.unlock();
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-  auto frozen_result = frozen_get_(key, tranc_id);
-  if (frozen_result.is_valid()) {
-    return frozen_result;
-  }
-  return SkipListIterator{};
+  return {};
 }
 
 SkipListIterator MemTable::get_(const std::string &key, uint64_t tranc_id) {
-
   auto cur_res = cur_get_(key, tranc_id);
-  if (cur_res.is_valid()) {
-    return cur_res;
-  }
-
-  auto frozen_result = frozen_get_(key, tranc_id);
-  if (frozen_result.is_valid()) {
-    return frozen_result;
-  }
-  return SkipListIterator{};
+  if (cur_res.is_valid()) return cur_res;
+  auto froz_res = frozen_get_(key, tranc_id);
+  if (froz_res.is_valid()) return froz_res;
+  return {};
 }
 
-std::vector<std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-    MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
-    std::vector<std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>> results;
-    results.reserve(keys.size());
+SkipListIterator MemTable::get(const std::string &key, uint64_t tranc_id) {
+  {
+    std::shared_lock lock(cur_mtx);
+    auto cur_res = cur_get_(key, tranc_id);
+    if (cur_res.is_valid()) return cur_res;
+  }
+  {
+    std::shared_lock lock(frozen_mtx);
+    auto froz_res = frozen_get_(key, tranc_id);
+    if (froz_res.is_valid()) return froz_res;
+  }
+  return {};
+}
 
-    // 1. 先获取活跃表的锁
-    std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-    for (const auto &key : keys) {
-        auto cur_res = cur_get_(key, tranc_id);
-        if (cur_res.is_valid()) {
-            if (cur_res.get_value().size() > 0) {
-                // 值存在且不为空
-                results.emplace_back(key, std::make_pair(cur_res.get_value(), cur_res.get_tranc_id()));
-            } else {
-                // 空值表示被删除
-                results.emplace_back(key, std::nullopt);
-            }
-        } else {
-            // 如果活跃表中未找到，标记为待查冻结表
-            results.emplace_back(key, std::nullopt);
-        }
+std::vector<
+    std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
+MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
+  std::vector<
+      std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
+      results;
+  results.reserve(keys.size());
+
+  // 1. 先获取活跃表的锁
+  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
+  for (const auto &key : keys) {
+    auto cur_res = cur_get_(key, tranc_id);
+    if (cur_res.is_valid()) {
+      if (cur_res.get_value().size() > 0) {
+        // 值存在且不为空
+        results.emplace_back(
+            key, std::make_pair(cur_res.get_value(), cur_res.get_tranc_id()));
+      } else {
+        // 空值表示被删除
+        results.emplace_back(key, std::nullopt);
+      }
+    } else {
+      // 如果活跃表中未找到，标记为待查冻结表
+      results.emplace_back(key, std::nullopt);
     }
+  }
 
-    // 2. 如果某些键在活跃表中未找到，获取冻结表的锁
-    bool need_frozen_lookup = false;
-    for (const auto &[key, value] : results) {
-        if (!value.has_value()) {
-            need_frozen_lookup = true;
-            break;
-        }
+  // 2. 如果某些键在活跃表中未找到，获取冻结表的锁
+  bool need_frozen_lookup = false;
+  for (const auto &[key, value] : results) {
+    if (!value.has_value()) {
+      need_frozen_lookup = true;
+      break;
     }
+  }
 
-    if (!need_frozen_lookup) { // 不需要查冻结表
-        slock1.unlock();
-        return results;
-    }
-
-    slock1.unlock(); // 释放活跃表的锁
-    std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-    for (auto &[key, value] : results) {
-        if (value.has_value()) {
-            continue; // 已在活跃表中找到，跳过
-        }
-
-        auto frozen_result = frozen_get_(key, tranc_id);
-        if (frozen_result.is_valid()) {
-            if (frozen_result.get_value().size() > 0) {
-                // 值存在且不为空
-                value = std::make_pair(frozen_result.get_value(), frozen_result.get_tranc_id());
-            } else {
-                // 空值表示被删除
-                value = std::nullopt;
-            }
-        }
-    }
-
-
+  if (!need_frozen_lookup) {  // 不需要查冻结表
+    slock1.unlock();
     return results;
+  }
+
+  slock1.unlock();  // 释放活跃表的锁
+  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
+  for (auto &[key, value] : results) {
+    if (value.has_value()) {
+      continue;  // 已在活跃表中找到，跳过
+    }
+
+    auto frozen_result = frozen_get_(key, tranc_id);
+    if (frozen_result.is_valid()) {
+      if (frozen_result.get_value().size() > 0) {
+        // 值存在且不为空
+        value = std::make_pair(frozen_result.get_value(),
+                               frozen_result.get_tranc_id());
+      } else {
+        // 空值表示被删除
+        value = std::nullopt;
+      }
+    }
+  }
+
+  return results;
 }
 
 void MemTable::remove_(const std::string &key, uint64_t tranc_id) {
-  // 删除的方式是写入空值
   current_table->put(key, "", tranc_id);
 }
 
 void MemTable::remove(const std::string &key, uint64_t tranc_id) {
-  std::unique_lock<std::shared_mutex> lock(cur_mtx);
+  std::unique_lock lock1(cur_mtx);
   remove_(key, tranc_id);
-  if (current_table->get_size() > LSM_PER_MEM_SIZE_LIMIT) {
-    // 冻结当前表还需要获取frozen_mtx的写锁
-    std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
+  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+    std::unique_lock lock2(frozen_mtx);
     frozen_cur_table_();
   }
 }
 
 void MemTable::remove_batch(const std::vector<std::string> &keys,
                             uint64_t tranc_id) {
-  std::unique_lock<std::shared_mutex> lock(cur_mtx);
-  // 删除的方式是写入空值
-  for (auto &key : keys) {
-    remove_(key, tranc_id);
+  std::unique_lock lock1(cur_mtx);
+  for (const auto &k : keys) {
+    remove_(k, tranc_id);
   }
-  if (current_table->get_size() > LSM_PER_MEM_SIZE_LIMIT) {
-    // 冻结当前表还需要获取frozen_mtx的写锁
-    std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
+  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+    std::unique_lock lock2(frozen_mtx);
     frozen_cur_table_();
   }
 }
@@ -209,9 +187,9 @@ void MemTable::clear() {
 }
 
 // 将最老的 memtable 写入 SST, 并返回控制类
-std::shared_ptr<SST>
-MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
-                     std::shared_ptr<BlockCache> block_cache) {
+std::shared_ptr<SST> MemTable::flush_last(
+    SSTBuilder &builder, std::string &sst_path, size_t sst_id,
+    std::shared_ptr<BlockCache> block_cache) {
   // 由于 flush 后需要移除最老的 memtable, 因此需要加写锁
   std::unique_lock<std::shared_mutex> lock(frozen_mtx);
 
@@ -249,13 +227,13 @@ MemTable::flush_last(SSTBuilder &builder, std::string &sst_path, size_t sst_id,
 
 void MemTable::frozen_cur_table_() {
   frozen_bytes += current_table->get_size();
-  frozen_tables.push_front(std::move(current_table));
+  frozen_tables.push_front(current_table);
   current_table = std::make_shared<SkipList>();
 }
 
 void MemTable::frozen_cur_table() {
-  std::unique_lock<std::shared_mutex> lock1(cur_mtx);
-  std::unique_lock<std::shared_mutex> lock2(frozen_mtx);
+  std::unique_lock lock1(cur_mtx);
+  std::unique_lock lock2(frozen_mtx);
   frozen_cur_table_();
 }
 

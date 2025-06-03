@@ -352,7 +352,7 @@ TEST(SkipListTest, TransactionId) {
   SkipList skipList;
   skipList.put("key1", "value1", 1);
   skipList.put("key1", "value2", 2);
-
+  skipList.print_skiplist();
   // 验证事务 id
   // 不指定事务 id，应该返回最新的值
   EXPECT_EQ((skipList.get("key1", 0).get_value()), "value2");
