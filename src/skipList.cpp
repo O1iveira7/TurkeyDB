@@ -1,12 +1,11 @@
 #include "skiplist.h"
 
 #include <cstdint>
+#include <format>
 #include <iostream>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
-
-
 BaseIterator &SkipListIterator::operator++() {
   if (current) {
     // skiplist
@@ -44,7 +43,8 @@ std::string SkipListIterator::get_key() const { return current->key_; }
 std::string SkipListIterator::get_value() const { return current->value_; }
 uint64_t SkipListIterator::get_tranc_id() const { return current->tranc_id_; }
 
-SkipList::SkipList(int max_lvl) : max_level(max_lvl), current_level(1) {
+SkipList::SkipList(size_t idx, int max_lvl)
+    : idx_(idx), max_level(max_lvl), current_level(1) {
   head = std::make_shared<SkipListNode>("", "", max_level, 0);
   dis_01 = std::uniform_int_distribution<>(0, 1);
   dis_level = std::uniform_int_distribution<>(0, (1 << max_lvl) - 1);
@@ -234,15 +234,8 @@ SkipListIterator SkipList::begin_preffix(const std::string &preffix) {
   }
   return SkipListIterator{nullptr};
 }
-// skipList.put("apple", "0", 0);
-// skipList.put("apple2", "1", 0);
-// skipList.put("apricot", "2", 0);
-// skipList.put("banana", "3", 0);
-// skipList.put("berry", "4", 0);
-// skipList.put("cherry", "5", 0);
-// skipList.put("cherry2", "6", 0);
-// 找到前缀的终结位置
-// [)
+
+// 找到前缀的终结位置 [)
 SkipListIterator SkipList::end_preffix(const std::string &prefix) {
   auto curr = head;
   for (int i = current_level - 1; i >= 0; i--) {
@@ -339,7 +332,7 @@ void SkipList::print_skiplist() {
     std::cout << "Level " << level << ": ";
     auto current = head->forward_[level];
     while (current) {
-      std::cout << current->key_ << "-" << current->tranc_id_;
+      std::cout << std::format("({},{})", current->key_, current->value_);
       current = current->forward_[level];
       if (current) {
         std::cout << " -> ";

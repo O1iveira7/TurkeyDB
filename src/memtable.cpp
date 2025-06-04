@@ -21,7 +21,8 @@ class BlockCache;
 
 // MemTable implementation using PIMPL idiom
 MemTable::MemTable() : frozen_bytes(0) {
-  current_table = std::make_shared<SkipList>();
+  current_table = std::make_shared<SkipList>(nxt_idx_);
+  nxt_idx_++;
 }
 MemTable::~MemTable() = default;
 
@@ -205,7 +206,8 @@ std::shared_ptr<SST> MemTable::flush_last(
     frozen_tables.push_front(current_table);
     frozen_bytes += current_table->get_size();
     // 创建新的空表作为当前表
-    current_table = std::make_shared<SkipList>();
+    current_table = std::make_shared<SkipList>(nxt_idx_);
+    nxt_idx_++;
   }
 
   // 将最老的 memtable 写入 SST
@@ -228,7 +230,8 @@ std::shared_ptr<SST> MemTable::flush_last(
 void MemTable::frozen_cur_table_() {
   frozen_bytes += current_table->get_size();
   frozen_tables.push_front(current_table);
-  current_table = std::make_shared<SkipList>();
+  current_table = std::make_shared<SkipList>(nxt_idx_);
+  nxt_idx_++;
 }
 
 void MemTable::frozen_cur_table() {
@@ -253,137 +256,92 @@ size_t MemTable::get_total_size() {
   return get_frozen_size() + get_cur_size();
 }
 
+// todo:这边的level是啥
 HeapIterator MemTable::begin(uint64_t tranc_id) {
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-  std::vector<SearchItem> item_vec;
+  std::shared_lock slock1(cur_mtx);
+  std::shared_lock slock2(frozen_mtx);
+  std::vector<SearchItem> search_items_vec;
 
-  for (auto iter = current_table->begin(); iter != current_table->end();
-       ++iter) {
-    if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-      continue;
-    }
-    item_vec.emplace_back(iter.get_key(), iter.get_value(), 0, 0,
-                          iter.get_tranc_id());
+  auto beg = current_table->begin();
+  while (beg != current_table->end()) {
+    search_items_vec.emplace_back(beg.get_key(), beg.get_value(),
+                                  current_table->get_idx(), 0, tranc_id);
+    ++beg;
   }
-
-  int table_idx = 1;
-  for (auto ft = frozen_tables.begin(); ft != frozen_tables.end(); ft++) {
-    auto table = *ft;
-    for (auto iter = table->begin(); iter != table->end(); ++iter) {
-      if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-        continue;
-      }
-      item_vec.emplace_back(iter.get_key(), iter.get_value(), table_idx, 0,
-                            iter.get_tranc_id());
+  for (const auto &curr : frozen_tables) {
+    auto curr_beg = curr->begin();
+    while (curr_beg != curr->end()) {
+      search_items_vec.emplace_back(curr_beg.get_key(), curr_beg.get_value(),
+                                    curr->get_idx(), 0, tranc_id);
+      ++curr_beg;
     }
-    table_idx++;
   }
-
-  return HeapIterator(item_vec, tranc_id);
+  return {search_items_vec, tranc_id};
 }
 
 HeapIterator MemTable::end() {
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-  return HeapIterator{};
+  std::shared_lock slock1(cur_mtx);
+  std::shared_lock slock2(frozen_mtx);
+  return {};
 }
 
 HeapIterator MemTable::iters_preffix(const std::string &preffix,
                                      uint64_t tranc_id) {
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-  std::vector<SearchItem> item_vec;
+  std::shared_lock slock1(cur_mtx);
+  std::shared_lock slock2(frozen_mtx);
+  std::vector<SearchItem> search_items_vec;
 
-  for (auto iter = current_table->begin_preffix(preffix);
-       iter != current_table->end_preffix(preffix); ++iter) {
-    if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-      // 如果开启了事务, 比当前事务 id 更大的记录是不可见的
-      continue;
-    }
-    if (!item_vec.empty() && item_vec.back().key_ == iter.get_key()) {
-      // 如果key相同，则只保留最新的事务修改的记录即可
-      // 且这个记录既然已经存在于item_vec中，则其肯定满足了事务的可见性判断
-      continue;
-    }
-    item_vec.emplace_back(iter.get_key(), iter.get_value(), 0, 0,
-                          iter.get_tranc_id());
+  auto cur_l_beg = current_table->begin_preffix(preffix);
+  auto cur_l_end = current_table->end_preffix(preffix);
+  while (cur_l_beg != cur_l_end) {
+    search_items_vec.emplace_back(cur_l_beg.get_key(), cur_l_beg.get_value(),
+                                  current_table->get_idx(), 1, tranc_id);
+    ++cur_l_beg;
   }
 
-  int table_idx = 1;
-  for (auto ft = frozen_tables.begin(); ft != frozen_tables.end(); ft++) {
-    auto table = *ft;
-    for (auto iter = table->begin_preffix(preffix);
-         iter != table->end_preffix(preffix); ++iter) {
-      if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-        // 如果开启了事务, 比当前事务 id 更大的记录是不可见的
-        continue;
-      }
-      if (!item_vec.empty() && item_vec.back().key_ == iter.get_key()) {
-        // 如果key相同，则只保留最新的事务修改的记录即可
-        // 且这个记录既然已经存在于item_vec中，则其肯定满足了事务的可见性判断
-        continue;
-      }
-      item_vec.emplace_back(iter.get_key(), iter.get_value(), table_idx, 0,
-                            iter.get_tranc_id());
+  for (const auto &frozen : frozen_tables) {
+    auto frozen_beg = frozen->begin_preffix(preffix);
+    auto frozen_end = frozen->end_preffix(preffix);
+    while (frozen_beg != frozen_end) {
+      search_items_vec.emplace_back(frozen_beg.get_key(),
+                                    frozen_beg.get_value(), frozen->get_idx(),
+                                    1, tranc_id);
+      ++frozen_beg;
     }
-    table_idx++;
   }
 
-  return HeapIterator(item_vec, tranc_id);
+  return {search_items_vec, tranc_id};
 }
 
 std::optional<std::pair<HeapIterator, HeapIterator>>
 MemTable::iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  std::shared_lock<std::shared_mutex> slock1(cur_mtx);
-  std::shared_lock<std::shared_mutex> slock2(frozen_mtx);
-
-  std::vector<SearchItem> item_vec;
-
-  auto cur_result = current_table->iters_monotony_predicate(predicate);
-  if (cur_result.has_value()) {
-    auto [begin, end] = cur_result.value();
-    for (auto iter = begin; iter != end; ++iter) {
-      if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-        // 如果开启了事务, 比当前事务 id 更大的记录是不可见的
-        continue;
-      }
-      if (!item_vec.empty() && item_vec.back().key_ == iter.get_key()) {
-        // 如果key相同，则只保留最新的事务修改的记录即可
-        // 且这个记录既然已经存在于item_vec中，则其肯定满足了事务的可见性判断
-        continue;
-      }
-      item_vec.emplace_back(iter.get_key(), iter.get_value(), 0, 0,
-                            iter.get_tranc_id());
+  std::shared_lock slock1(cur_mtx);
+  std::shared_lock slock2(frozen_mtx);
+  std::vector<SearchItem> search_items_vec;
+  auto opt_curr_range = current_table->iters_monotony_predicate(predicate);
+  if (opt_curr_range.has_value()) {
+    auto [pred_beg, pred_end] = opt_curr_range.value();
+    while (pred_beg != pred_end) {
+      search_items_vec.emplace_back(pred_beg.get_key(), pred_beg.get_value(),
+                                    current_table->get_idx(), 1, tranc_id);
+      ++pred_beg;
     }
   }
 
-  int table_idx = 1;
-  for (auto ft = frozen_tables.begin(); ft != frozen_tables.end(); ft++) {
-    auto table = *ft;
-    auto result = table->iters_monotony_predicate(predicate);
-    if (result.has_value()) {
-      auto [begin, end] = result.value();
-      for (auto iter = begin; iter != end; ++iter) {
-        if (tranc_id != 0 && iter.get_tranc_id() > tranc_id) {
-          // 如果开启了事务, 比当前事务 id 更大的记录是不可见的
-          continue;
-        }
-        if (!item_vec.empty() && item_vec.back().key_ == iter.get_key()) {
-          // 如果key相同，则只保留最新的事务修改的记录即可
-          // 且这个记录既然已经存在于item_vec中，则其肯定满足了事务的可见性判断
-          continue;
-        }
-        item_vec.emplace_back(iter.get_key(), iter.get_value(), table_idx, 0,
-                              iter.get_tranc_id());
+  for (const auto &frozen : frozen_tables) {
+    auto frozen_curr_range = frozen->iters_monotony_predicate(predicate);
+    if (frozen_curr_range.has_value()) {
+      auto [frozen_beg, frozen_end] =frozen_curr_range.value();
+      while (frozen_beg != frozen_end) {
+        search_items_vec.emplace_back(frozen_beg.get_key(),
+                                      frozen_beg.get_value(), frozen->get_idx(),
+                                      1, tranc_id);
+        ++frozen_beg;
       }
     }
-    table_idx++;
   }
-
-  if (item_vec.empty()) {
-    return std::nullopt;
-  }
-  return std::make_pair(HeapIterator(item_vec, tranc_id), HeapIterator{});
+  if (search_items_vec.empty()) return {};
+  return {
+      std::make_pair(HeapIterator{search_items_vec, tranc_id}, HeapIterator{})};
 }

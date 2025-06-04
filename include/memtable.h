@@ -24,7 +24,7 @@ class MemTable {
   friend class TranContext;
   friend class HeapIterator;
 
-private:
+ private:
   void put_(const std::string &key, const std::string &value,
             uint64_t tranc_id);
 
@@ -35,9 +35,9 @@ private:
   SkipListIterator frozen_get_(const std::string &key, uint64_t tranc_id);
 
   void remove_(const std::string &key, uint64_t tranc_id);
-  void frozen_cur_table_(); // _ 表示不需要锁的版本
+  void frozen_cur_table_();  // _ 表示不需要锁的版本
 
-public:
+ public:
   MemTable();
   ~MemTable();
 
@@ -46,8 +46,9 @@ public:
                  uint64_t tranc_id);
 
   SkipListIterator get(const std::string &key, uint64_t tranc_id);
-  std::vector<std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-                    get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
+  std::vector<
+      std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
+  get_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
   void remove(const std::string &key, uint64_t tranc_id);
   void remove_batch(const std::vector<std::string> &keys, uint64_t tranc_id);
 
@@ -62,16 +63,17 @@ public:
   HeapIterator begin(uint64_t tranc_id);
   HeapIterator iters_preffix(const std::string &preffix, uint64_t tranc_id);
 
-  std::optional<std::pair<HeapIterator, HeapIterator>>
-  iters_monotony_predicate(uint64_t tranc_id,
-                           std::function<int(const std::string &)> predicate);
+  std::optional<std::pair<HeapIterator, HeapIterator>> iters_monotony_predicate(
+      uint64_t tranc_id, std::function<int(const std::string &)> predicate);
 
   HeapIterator end();
 
-private:
+ private:
   std::shared_ptr<SkipList> current_table;
   std::list<std::shared_ptr<SkipList>> frozen_tables;
   size_t frozen_bytes;
-  std::shared_mutex frozen_mtx; // 冻结表的锁
-  std::shared_mutex cur_mtx;    // 活跃表的锁
+  std::shared_mutex frozen_mtx;  // 冻结表的锁
+  std::shared_mutex cur_mtx;     // 活跃表的锁
+
+  size_t nxt_idx_{0};
 };

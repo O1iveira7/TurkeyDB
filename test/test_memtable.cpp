@@ -386,8 +386,8 @@ TEST(MemTableTest, PreffixIter) {
 
   // 在新的当前表中插入数据
   memtable.put("mmmmm", "-1", 0);
-  memtable.remove("ab", 0);
-  memtable.put("abc", "33", 0);
+  memtable.remove("ab", 0); // 2
+  memtable.put("abc", "33", 0);// 1
 
   int id = 0;
   std::vector<std::pair<std::string, std::string>> answer{{"abc", "33"},

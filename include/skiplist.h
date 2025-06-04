@@ -97,15 +97,15 @@ class SkipList {
   std::uniform_int_distribution<> dis_01;
   std::uniform_int_distribution<> dis_level;
   std::mt19937 gen;
+  size_t idx_;
+
  private:
   int random_level();  // 生成新节点的随机层级数
  public:
-  SkipList(int max_lvl = 16);  // 构造函数，初始化跳表
+  SkipList(size_t idx = 0, int max_lvl = 16);  // 构造函数，初始化跳表
 
   // 析构函数需要确保没有其他线程访问
-  ~SkipList() {
-
-  }
+  ~SkipList() {}
 
   // 插入或更新键值对
   // 这里不对 tranc_id 进行检查，由上层保证 tranc_id 的合法性
@@ -136,6 +136,8 @@ class SkipList {
 
   std::optional<std::pair<SkipListIterator, SkipListIterator>>
   iters_monotony_predicate(std::function<int(const std::string &)> predicate);
+
+  size_t get_idx() { return idx_; }
 
   void print_skiplist();
 };
