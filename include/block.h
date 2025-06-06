@@ -14,7 +14,7 @@ Refer to https://skyzh.github.io/mini-lsm/week1-03-block.html for memory layout
 -----------------------------------------------------------------------------
 |             Data Section           |      Offset Section |     Extra      |
 -----------------------------------------------------------------------------
-|Entry#1|Entry#2|...|Entry#N|Offset#1|Offset#2|...|Offset#N|num_of_elements |
+|Entry#1|Entry#2|...|Entry#N|Offset#1|Offset#2|...|Offset#N|num_of_elements | hash 4B (opt)|
 -----------------------------------------------------------------------------
 
 ---------------------------------------------------------------------
@@ -30,15 +30,16 @@ class Block : public std::enable_shared_from_this<Block> {
   friend BlockIterator;
 
 private:
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data;// data section，里面的数据存储的entry
   std::vector<uint16_t> offsets;
-  size_t capacity;
+  size_t capacity; // 由SST传入，表示一个Block最大的长度
 
   struct Entry {
     std::string key;
     std::string value;
     uint64_t tranc_id;
   };
+  // note：这边的offset都是offset中的,
   Entry get_entry_at(size_t offset) const;
   std::string get_key_at(size_t offset) const;
   std::string get_value_at(size_t offset) const;
@@ -56,6 +57,7 @@ public:
   // ! 这里的编码函数不包括 hash
   std::vector<uint8_t> encode();
   // ! 这里的解码函数可指定切片是否包括 hash
+  // ! 这是个静态方法，使用的时候直接Block::decode
   static std::shared_ptr<Block> decode(const std::vector<uint8_t> &encoded,
                                        bool with_hash = false);
   std::string get_first_key();
