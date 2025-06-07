@@ -1,120 +1,127 @@
 #include "block_iterator.h"
-#include "block.h"
+
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 
+#include "block.h"
+
 class Block;
 
+// todo
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, size_t index,
                              uint64_t tranc_id)
-    : block(b), current_index(index), tranc_id_(tranc_id),
+    : block(b),
+      current_index(index),
+      tranc_id_(tranc_id),
       cached_value(std::nullopt) {
   skip_by_tranc_id();
+  update_current();
 }
 
+// 假设了key在当前block中
 BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
                              uint64_t tranc_id)
     : block(b), tranc_id_(tranc_id), cached_value(std::nullopt) {
-  auto key_idx_ops = block->get_idx_binary(key, tranc_id);
-  if (key_idx_ops.has_value()) {
-    current_index = key_idx_ops.value();
+  // todo
+  auto idx_opt = block->get_idx_binary(key, tranc_id);
+  if (idx_opt.has_value()) {
+    current_index = idx_opt.value();
+    update_current();
   } else {
-    current_index = block->offsets.size();
+    // throw std::runtime_error("BlockIterator:key doesn't exits!");
+    block.reset();
   }
 }
 
-// BlockIterator::BlockIterator(std::shared_ptr<Block> b, uint64_t tranc_id)
-//     : block(b), current_index(0), tranc_id_(tranc_id),
-//       cached_value(std::nullopt) {
-//   skip_by_tranc_id();
-// }
-
 BlockIterator::pointer BlockIterator::operator->() const {
-  update_current();
-  return &(*cached_value);
+  // todo
+  if (!cached_value.has_value()) {
+    update_current();
+  }
+  return &cached_value.value();
 }
 
 BlockIterator &BlockIterator::operator++() {
-  if (block && current_index < block->size()) {
-    auto prev_idx = current_index;
-    auto prev_offset = block->get_offset_at(prev_idx);
-    auto prev_entry = block->get_entry_at(prev_offset);
-
-    ++current_index;
-
-    // 跳过相同的key
-    while (block && current_index < block->size()) {
-      auto cur_offset = block->get_offset_at(current_index);
-      auto cur_entry = block->get_entry_at(cur_offset);
-      if (cur_entry.key != prev_entry.key) {
+  // todo
+  if (block == nullptr || current_index >= block->size()) return *this;
+  if (tranc_id_ == 0) {
+    while (current_index < block->size()) {
+      current_index++;
+      const auto &curr_key =
+          block->get_key_at(block->get_offset_at(current_index));
+      if (prev_keys_.find(curr_key) == prev_keys_.end()) {
+        update_current();
+        prev_keys_.insert(curr_key);
         break;
       }
-      // 可能会连续出现多个key, 但由不同事务创建, 同样的key直接跳过
-      ++current_index;
     }
-
-    // 出现不同的key时, 还需要跳过不可见事务的键值对
-    skip_by_tranc_id();
+  } else {
+    while (current_index < block->size()) {
+      current_index++;
+      auto curr_tranc =
+          block->get_tranc_id_at(block->get_offset_at(current_index));
+      const auto &curr_key =
+          block->get_key_at(block->get_offset_at(current_index));
+      if (curr_tranc <= tranc_id_ && prev_keys_.find(curr_key) == prev_keys_.end()) {
+        update_current();
+        prev_keys_.insert(curr_key);
+        break;
+      }
+    }
   }
+
   return *this;
 }
 
 bool BlockIterator::operator==(const BlockIterator &other) const {
-  if (block == nullptr && other.block == nullptr) {
-    return true;
-  }
-  if (block == nullptr || other.block == nullptr) {
+  // todo
+  if (block == nullptr && other.block == nullptr) return true;
+  if ((block && other.block == nullptr) || (block == nullptr && other.block))
     return false;
-  }
-  auto cmp = block == other.block && current_index == other.current_index;
-  return cmp;
+  if (block == other.block && current_index == other.current_index &&
+      tranc_id_ == other.tranc_id_)
+    return true;
+  return false;
 }
 
 bool BlockIterator::operator!=(const BlockIterator &other) const {
+  // todo
   return !(*this == other);
 }
 
 BlockIterator::value_type BlockIterator::operator*() const {
-  if (!block || current_index >= block->size()) {
-    throw std::out_of_range("Iterator out of range");
-  }
-
-  // 使用缓存避免重复解析
+  // todo
+  if (block == nullptr) throw std::runtime_error("BlockIterator:* on nullptr");
   if (!cached_value.has_value()) {
-    size_t offset = block->get_offset_at(current_index);
-    cached_value =
-        std::make_pair(block->get_key_at(offset), block->get_value_at(offset));
+    update_current();
   }
-  return *cached_value;
+  return {cached_value.value().first, cached_value.value().second};
 }
 
-bool BlockIterator::is_end() { return current_index == block->offsets.size(); }
+bool BlockIterator::is_end() const {  // todo
+  if (block == nullptr) return true;
+  return false;
+}
 
 void BlockIterator::update_current() const {
-  if (!cached_value && current_index < block->offsets.size()) {
-    size_t offset = block->get_offset_at(current_index);
-    cached_value =
-        std::make_pair(block->get_key_at(offset), block->get_value_at(offset));
+  if (block == nullptr) return;
+  if (current_index < block->size()) {
+    const auto &curr_key =
+        block->get_key_at(block->get_offset_at(current_index));
+    const auto &curr_val =
+        block->get_value_at(block->get_offset_at(current_index));
+    cached_value = {curr_key, curr_val};
   }
 }
 
 void BlockIterator::skip_by_tranc_id() {
-  if (tranc_id_ == 0) {
-    // 没有开启事务功能
-    cached_value = std::nullopt;
-    return;
-  }
+  if (block == nullptr || tranc_id_ == 0) return;
 
-  while (current_index < block->offsets.size()) {
-    size_t offset = block->get_offset_at(current_index);
-    auto tranc_id = block->get_tranc_id_at(offset);
-    if (tranc_id <= tranc_id_) {
-      // 位置合法
-      break;
-    }
-    // 否则跳过不可见事务的键值对
-    ++current_index;
+  while (current_index < block->size() &&
+         tranc_id_ >
+             block->get_tranc_id_at(block->get_offset_at(current_index))) {
+    current_index++;
   }
-  cached_value = std::nullopt;
 }

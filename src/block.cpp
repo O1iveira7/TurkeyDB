@@ -15,7 +15,8 @@ Block::Block(size_t capacity) : capacity(capacity) {}
 // todo 都忘记考虑 tranc_id了
 std::vector<uint8_t> Block::encode() {
   // todo
-  std::vector<uint8_t> res(data.size() + offsets.size() * sizeof(uint16_t) + sizeof(uint16_t));
+  std::vector<uint8_t> res(data.size() + offsets.size() * sizeof(uint16_t) +
+                           sizeof(uint16_t));
   size_t res_sz = 0;
   // data
   std::memcpy(res.data(), data.data(), data.size());
@@ -93,9 +94,8 @@ size_t Block::get_offset_at(size_t idx) const {
 bool Block::add_entry(const std::string &key, const std::string &value,
                       uint64_t tranc_id, bool force_write) {
   // todo
-  size_t new_entry_sz = sizeof(uint16_t) + key.size() +
-                        sizeof(uint16_t) + value.size() +
-                        sizeof(uint64_t);
+  size_t new_entry_sz = sizeof(uint16_t) + key.size() + sizeof(uint16_t) +
+                        value.size() + sizeof(uint64_t);
   size_t new_total_sz = data.size() + new_entry_sz;
   if (new_total_sz > capacity && !force_write) return false;
 
@@ -105,7 +105,7 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 
   // key size
   uint16_t key_sz = static_cast<uint16_t>(key.size());
-  const uint8_t* key_sz_ptr = reinterpret_cast<const uint8_t*>(&key_sz);
+  const uint8_t *key_sz_ptr = reinterpret_cast<const uint8_t *>(&key_sz);
   data.insert(data.end(), key_sz_ptr, key_sz_ptr + sizeof(uint16_t));
 
   // key
@@ -113,14 +113,14 @@ bool Block::add_entry(const std::string &key, const std::string &value,
 
   // value size
   uint16_t val_sz = static_cast<uint16_t>(value.size());
-  const uint8_t* val_sz_ptr = reinterpret_cast<const uint8_t*>(&val_sz);
+  const uint8_t *val_sz_ptr = reinterpret_cast<const uint8_t *>(&val_sz);
   data.insert(data.end(), val_sz_ptr, val_sz_ptr + sizeof(uint16_t));
 
   // value
   data.insert(data.end(), value.begin(), value.end());
 
   // tranc_id
-  const uint8_t* tranc_ptr = reinterpret_cast<const uint8_t*>(&tranc_id);
+  const uint8_t *tranc_ptr = reinterpret_cast<const uint8_t *>(&tranc_id);
   data.insert(data.end(), tranc_ptr, tranc_ptr + sizeof(uint64_t));
 
   return true;
@@ -148,17 +148,17 @@ std::string Block::get_value_at(size_t offset) const {
   return {val_ptr, val_sz};
 }
 // tranc是uint16??
-uint16_t Block::get_tranc_id_at(size_t offset) const {
+uint64_t Block::get_tranc_id_at(size_t offset) const {
   // todo
   uint16_t key_sz = 0, val_sz = 0;
   std::memcpy(&key_sz, data.data() + offset, sizeof(uint16_t));
   std::memcpy(&val_sz, data.data() + offset + sizeof(uint16_t) + key_sz,
               sizeof(uint16_t));
-  uint16_t tranc = 0;
+  uint64_t tranc = 0;
   std::memcpy(&tranc,
               data.data() + offset + sizeof(uint16_t) + key_sz +
                   sizeof(uint16_t) + val_sz,
-              sizeof(uint16_t));
+              sizeof(uint64_t));
 
   return tranc;
 }
@@ -235,7 +235,7 @@ std::optional<std::string> Block::get_value_binary(const std::string &key,
 // binary search
 std::optional<size_t> Block::get_idx_binary(const std::string &key,
                                             uint64_t tranc_id) {
-  if (offsets.empty())return std::nullopt;
+  if (offsets.empty()) return std::nullopt;
   // todo
   auto pred = [&](const Entry &curr) -> bool {
     if (curr.key == key) {
@@ -262,7 +262,8 @@ std::optional<size_t> Block::get_idx_binary(const std::string &key,
   finnal.key = get_key_at(get_offset_at(l));
   finnal.tranc_id = get_tranc_id_at(get_offset_at(l));
   if (finnal.key == key) {
-    if ((tranc_id != 0 && finnal.tranc_id <= tranc_id) || tranc_id == 0) {// 开启事务
+    if ((tranc_id != 0 && finnal.tranc_id <= tranc_id) ||
+        tranc_id == 0) {  // 开启事务
       return l;
     }
   }
