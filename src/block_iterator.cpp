@@ -120,7 +120,7 @@ void BlockIterator::skip_by_tranc_id() {
   if (block == nullptr || tranc_id_ == 0) return;
 
   while (current_index < block->size() &&
-         tranc_id_ >
+         tranc_id_ <
              block->get_tranc_id_at(block->get_offset_at(current_index))) {
     current_index++;
   }

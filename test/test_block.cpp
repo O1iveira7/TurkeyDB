@@ -290,7 +290,7 @@ TEST_F(BlockTest, PredicateTest) {
 
     auto result =
         block1->get_monotony_predicate_iters(0, [](const std::string &key) {
-          if (key < "key0020") {
+          if (key < "key0020") { // 20~29  end:30
             return 1;
           }
           if (key >= "key0030") {
@@ -343,14 +343,14 @@ TEST_F(BlockTest, TrancPredicateTest) {
     block1->add_entry("key0", "value0", 0, false);
     block1->add_entry("key1", "value1", 1, false);
     block1->add_entry("key2", "value22", 10, false);
-    block1->add_entry("key2", "value2", 2, false);
-    block1->add_entry("key3", "value3", 3, false);
+    block1->add_entry("key2", "value2", 2, false);  // 1
+    block1->add_entry("key3", "value3", 3, false); // 2
     block1->add_entry("key4", "value4444", 9, false);
     block1->add_entry("key4", "value444", 8, false);
-    block1->add_entry("key4", "value44", 7, false);
+    block1->add_entry("key4", "value44", 7, false); // 3
     block1->add_entry("key4", "value4", 4, false);
     block1->add_entry("key5", "value5555", 8, false);
-    block1->add_entry("key5", "value555", 7, false);
+    block1->add_entry("key5", "value555", 7, false); // 4
     block1->add_entry("key5", "value55", 6, false);
     block1->add_entry("key5", "value5", 5, false);
     block1->add_entry("key6", "value6", 6, false);
@@ -362,7 +362,7 @@ TEST_F(BlockTest, TrancPredicateTest) {
 
   auto result =
       block2->get_monotony_predicate_iters(7, [](const std::string &key) {
-        if (key < "key2") {
+        if (key < "key2") { // [2,6)   tranc_id 7
           return 1;
         }
         if (key >= "key6") {
@@ -372,7 +372,8 @@ TEST_F(BlockTest, TrancPredicateTest) {
       });
   EXPECT_TRUE(result.has_value());
   auto [it_begin, it_end] = result.value();
-
+  // 不是[)的逻辑吗？？为什么会有key6???
+  // 没问题，左边又开
   EXPECT_EQ((*it_end)->first, "key6");
 
   EXPECT_EQ((*it_begin)->first, "key2");

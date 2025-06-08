@@ -262,8 +262,7 @@ std::optional<size_t> Block::get_idx_binary(const std::string &key,
   finnal.key = get_key_at(get_offset_at(l));
   finnal.tranc_id = get_tranc_id_at(get_offset_at(l));
   if (finnal.key == key) {
-    if ((tranc_id != 0 && finnal.tranc_id <= tranc_id) ||
-        tranc_id == 0) {  // 开启事务
+    if ((tranc_id != 0 && finnal.tranc_id <= tranc_id) || tranc_id == 0) {
       return l;
     }
   }
@@ -282,55 +281,59 @@ std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::get_monotony_predicate_iters(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-  if (offsets.empty()) {
-    return std::nullopt;
+  //[2,6)   tranc_id 7
+  if (offsets.empty()) return std::nullopt;
+  int start_idx = -1, end_idx = -1;
+  size_t l = 0, r = offsets.size() - 1;
+  while (l < r) {
+    int mid = (l + r) >> 1;
+    auto curr_offset = get_offset_at(mid);
+    auto curr_key = get_key_at(curr_offset);
+    auto pred_res = predicate(curr_key);
+    if (pred_res < 0)
+      r = mid;
+    else {
+      if (pred_res == 0) {
+        start_idx = mid;
+        r = mid;
+        continue;
+      }
+      l = mid + 1;
+    }
   }
-
-  // 第一次二分查找，找到第一个满足谓词的位置
-  int left = 0;
-  int right = offsets.size() - 1;
-  int first = -1;
-
-  while (left <= right) {
-    int mid = left + (right - left) / 2;
-    size_t mid_offset = offsets[mid];
-    auto mid_key = get_key_at(mid_offset);
-    int direction = predicate(mid_key);
-    if (direction <= 0) {  // 目标在 mid 左侧
-      right = mid - 1;
-    } else  // 目标在mid右侧
-      left = mid + 1;
+  if (start_idx == -1) return std::nullopt;
+  l = start_idx;
+  r = offsets.size() - 1;
+  while (l < r) {
+    int mid = (l + r + 1) >> 1;
+    auto curr_offset = get_offset_at(mid);
+    auto curr_key = get_key_at(curr_offset);
+    auto pred_res = predicate(curr_key);
+    if (pred_res > 0)
+      l = mid;  // 可行区间
+    else {
+      if (pred_res == 0) {
+        end_idx = mid;
+        l = mid;
+        continue;
+      }
+      r = mid - 1;
+    }
   }
-
-  if (left == -1) {
-    return std::nullopt;  // 没有找到满足谓词的元素
+  // 这边又是闭区间了????
+  if (end_idx == -1) {
+    auto start_p = std::make_shared<BlockIterator>(shared_from_this(),
+                                                   start_idx, tranc_id);
+    auto end_p = start_p;
+    ++(*end_p);
+    return std::make_optional(std::make_pair(start_p, end_p));
   }
+  auto start_p =
+      std::make_shared<BlockIterator>(shared_from_this(), start_idx, tranc_id);
+  auto end_p =
+      std::make_shared<BlockIterator>(shared_from_this(), end_idx + 1, tranc_id);
 
-  first = left;  // 保留下找到的第一个的位置
-
-  // 第二次二分查找，找到最后一个满足谓词的位置
-  int last = -1;
-  right = offsets.size() - 1;
-  while (left <= right) {
-    int mid = left + (right - left) / 2;
-    size_t mid_offset = offsets[mid];
-    auto mid_key = get_key_at(mid_offset);
-    int direction = predicate(mid_key);
-    if (direction < 0) {
-      right = mid - 1;
-    } else
-      left = mid + 1;
-  }
-  last = left - 1;
-  // 最后进行组合
-  auto it_begin =
-      std::make_shared<BlockIterator>(shared_from_this(), first, tranc_id);
-  auto it_end =
-      std::make_shared<BlockIterator>(shared_from_this(), last + 1, tranc_id);
-
-  return std::make_optional<std::pair<std::shared_ptr<BlockIterator>,
-                                      std::shared_ptr<BlockIterator>>>(it_begin,
-                                                                       it_end);
+  return std::make_optional(std::make_pair(start_p, end_p));
 }
 
 Block::Entry Block::get_entry_at(size_t offset) const {
@@ -353,13 +356,38 @@ BlockIterator Block::begin(uint64_t tranc_id) {
   return BlockIterator(shared_from_this(), 0, tranc_id);
 }
 
+// todo how to deal with tranc_id?
+// 因为返回的是一个区间[beg,end)
+// 下面：key，tranc_id
+// key1,3   key1,2   key2,3
+// 怎么把key1，2排除调呢？ ==>迭代器的++实现了这个🐕
+// ==>只要找到开始和结束的区间就可以了
 std::optional<
     std::pair<std::shared_ptr<BlockIterator>, std::shared_ptr<BlockIterator>>>
 Block::iters_preffix(uint64_t tranc_id, const std::string &preffix) {
-  auto func = [&preffix](const std::string &key) {
-    return -key.compare(0, preffix.size(), preffix);
-  };
-  return get_monotony_predicate_iters(tranc_id, func);
+  size_t curr_idx = 0, end_idx = offsets.size();
+  size_t start_idx = 0;
+  while (curr_idx != end_idx) {
+    if (get_key_at(get_offset_at(curr_idx)).starts_with(preffix)) {
+      break;
+    }
+    ++curr_idx;
+  }
+  if (curr_idx != end_idx) {
+    start_idx = curr_idx;
+    while (curr_idx != end_idx) {
+      if (!get_key_at(get_offset_at(curr_idx)).starts_with(preffix)) {
+        break;
+      }
+      ++curr_idx;
+    }
+    auto res = std::make_pair(std::make_shared<BlockIterator>(
+                                  shared_from_this(), start_idx, tranc_id),
+                              std::make_shared<BlockIterator>(
+                                  shared_from_this(), curr_idx, tranc_id));
+    return std::make_optional(res);
+  }
+  return std::nullopt;
 }
 
 BlockIterator Block::end() {
