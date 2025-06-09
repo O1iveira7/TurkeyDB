@@ -12,7 +12,6 @@
 #include "block_iterator.h"
 
 Block::Block(size_t capacity) : capacity(capacity) {}
-// todo 都忘记考虑 tranc_id了
 std::vector<uint8_t> Block::encode() {
   // todo
   std::vector<uint8_t> res(data.size() + offsets.size() * sizeof(uint16_t) +
@@ -32,7 +31,6 @@ std::vector<uint8_t> Block::encode() {
 
 std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
                                      bool with_hash) {
-  // todo how to deal with hash...
   size_t snallest = sizeof(uint16_t) * 3 + sizeof(uint64_t);
   if (encoded.size() < snallest)
     throw std::runtime_error("encoded is too small!");
@@ -320,7 +318,6 @@ Block::get_monotony_predicate_iters(
       r = mid - 1;
     }
   }
-  // 这边又是闭区间了????
   if (end_idx == -1) {
     auto start_p = std::make_shared<BlockIterator>(shared_from_this(),
                                                    start_idx, tranc_id);

@@ -89,8 +89,9 @@ add_executable(
         TEST_DB
         test/test_skiplist.cpp
         test/test_block.cpp
-        test/test_sstable.cpp
         test/test_memtable.cpp
+        test/test_sst.cpp
+        test/test_blockmeta.cpp
 )
 
 target_link_libraries(

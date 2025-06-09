@@ -1,8 +1,9 @@
 #include "blockmeta.h"
+
 #include <cstring>
 #include <functional>
 #include <stdexcept>
-
+#include <cassert>
 BlockMeta::BlockMeta() : offset(0), first_key(""), last_key("") {}
 
 BlockMeta::BlockMeta(size_t offset, const std::string &first_key,
@@ -11,119 +12,85 @@ BlockMeta::BlockMeta(size_t offset, const std::string &first_key,
 
 void BlockMeta::encode_meta_to_slice(std::vector<BlockMeta> &meta_entries,
                                      std::vector<uint8_t> &metadata) {
-  // 1. 计算总大小：num_entries(32) + 所有entries的大小 + hash(32)
-  uint32_t num_entries = meta_entries.size();
-  size_t total_size = sizeof(uint32_t); // num_entries
-
-  // 计算所有entries的大小
-  for (const auto &meta : meta_entries) {
-    total_size += sizeof(uint32_t) +      // offset
-                  sizeof(uint16_t) +      // first_key_len
-                  meta.first_key.size() + // first_key
-                  sizeof(uint16_t) +      // last_key_len
-                  meta.last_key.size();   // last_key
+  // todo
+  auto total_size = sizeof(uint32_t) * 2;  // n + hash
+  for (const auto &curr : meta_entries) {
+    // entries
+    size_t curr_total = sizeof(uint32_t) + sizeof(uint16_t) * 2 +
+                        curr.first_key.size() + curr.last_key.size();
+    total_size += curr_total;
   }
-  total_size += sizeof(uint32_t); // hash
+  metadata.reserve(total_size);
 
-  // 2. 分配空间
-  metadata.resize(total_size);
-  uint8_t *ptr = metadata.data();
+  uint32_t n = meta_entries.size();
+  const uint8_t *n_p = reinterpret_cast<const uint8_t *>(&n);
+  metadata.insert(metadata.end(), n_p, n_p + sizeof(uint32_t));
 
-  // 3. 写入元素个数
-  memcpy(ptr, &num_entries, sizeof(uint32_t));
-  ptr += sizeof(uint32_t);
+  for (const auto &curr : meta_entries) {
+    // entry:offset
+    auto offset = curr.offset;
+    const uint8_t * offset_p = reinterpret_cast<const uint8_t *>(&offset);
+    metadata.insert(metadata.end(), offset_p, offset_p + sizeof(uint32_t));
 
-  // 4. 写入每个entry
-  for (const auto &meta : meta_entries) {
-    // 写入 offset
-    uint32_t offset32 = static_cast<uint32_t>(meta.offset);
-    memcpy(ptr, &offset32, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
+    // entry:first_key_len first_key  last_key_len last_key
+    auto first_key_sz = curr.first_key.size();
 
-    // 写入 first_key_len 和 first_key
-    uint16_t first_key_len = meta.first_key.size();
-    memcpy(ptr, &first_key_len, sizeof(uint16_t));
-    ptr += sizeof(uint16_t);
-    memcpy(ptr, meta.first_key.data(), first_key_len);
-    ptr += first_key_len;
+    const uint8_t * first_p = reinterpret_cast<const uint8_t *>(&first_key_sz);
+    metadata.insert(metadata.end(), first_p, first_p + sizeof(uint16_t));
+    metadata.insert(metadata.end(), curr.first_key.begin(),
+                    curr.first_key.end());
 
-    // 写入 last_key_len 和 last_key
-    uint16_t last_key_len = meta.last_key.size();
-    memcpy(ptr, &last_key_len, sizeof(uint16_t));
-    ptr += sizeof(uint16_t);
-    memcpy(ptr, meta.last_key.data(), last_key_len);
-    ptr += last_key_len;
+    auto last_key_sz = curr.last_key.size();
+    const uint8_t * last_p = reinterpret_cast<const uint8_t *>(&last_key_sz);
+    metadata.insert(metadata.end(), last_p, last_p + sizeof(uint16_t));
+    metadata.insert(metadata.end(), curr.last_key.begin(), curr.last_key.end());
   }
 
-  // 5. 计算并写入hash
-  const uint8_t *data_start = metadata.data() + sizeof(uint32_t);
-  const uint8_t *data_end = ptr;
-  size_t data_len = data_end - data_start;
 
-  // 使用 std::hash 计算哈希值
-  uint32_t hash = std::hash<std::string_view>{}(
-      std::string_view(reinterpret_cast<const char *>(data_start), data_len));
-
-  memcpy(ptr, &hash, sizeof(uint32_t));
+  std::hash<std::string_view> hasher;
+  auto str = std::string_view(reinterpret_cast<const char *>(
+      metadata.data()),metadata.size() - sizeof(uint32_t));
+  auto hash = hasher(str);
+  auto hash_p = reinterpret_cast<const uint8_t *>(&hash);
+  metadata.insert(metadata.end(), hash_p, hash_p + sizeof(uint32_t));
 }
 
-std::vector<BlockMeta>
-BlockMeta::decode_meta_from_slice(const std::vector<uint8_t> &metadata) {
+std::vector<BlockMeta> BlockMeta::decode_meta_from_slice(
+    const std::vector<uint8_t> &metadata) {
+  if (metadata.size() < sizeof(uint32_t) * 2)throw std::runtime_error("BlockMeta:metadata too small!!!");
   std::vector<BlockMeta> meta_entries;
+  uint32_t cnt = 0;
+  uint32_t off = 0;
+  std::memcpy(&cnt, metadata.data(), sizeof(uint32_t));
+  off += sizeof(uint32_t);
+  for (int i = 0; i < cnt; i++) {
+    uint32_t block_offset = 0;
+    std::memcpy(&block_offset,metadata.data() + off,sizeof(uint32_t));
+    off += sizeof(uint32_t);
 
-  // 1. 验证最小长度
-  if (metadata.size() < sizeof(uint32_t) * 2) { // 至少要有num_entries和hash
-    throw std::runtime_error("Invalid metadata size");
+    uint16_t first_key_len = 0;
+    std::memcpy(&first_key_len,metadata.data() + off,sizeof(uint16_t));
+    off += sizeof(uint16_t);
+
+    std::string first_key(metadata.data() + off,metadata.data() + off + first_key_len);
+    off += first_key_len;
+
+    uint16_t last_key_len = 0;
+    std::memcpy(&last_key_len,metadata.data() + off,sizeof(uint16_t));
+    off += sizeof(uint16_t);
+
+    std::string last_key(metadata.data() + off,metadata.data() + off + last_key_len);
+    off += last_key_len;
+
+    meta_entries.emplace_back(block_offset,first_key,last_key);
   }
-
-  // 2. 读取元素个数
-  uint32_t num_entries;
-  const uint8_t *ptr = metadata.data();
-  memcpy(&num_entries, ptr, sizeof(uint32_t));
-  ptr += sizeof(uint32_t);
-
-  // 3. 读取entries
-  for (uint32_t i = 0; i < num_entries; ++i) {
-    BlockMeta meta;
-
-    // 读取 offset
-    uint32_t offset32;
-    memcpy(&offset32, ptr, sizeof(uint32_t));
-    meta.offset = offset32;
-    ptr += sizeof(uint32_t);
-
-    // 读取 first_key
-    uint16_t first_key_len;
-    memcpy(&first_key_len, ptr, sizeof(uint16_t));
-    ptr += sizeof(uint16_t);
-    meta.first_key.assign(reinterpret_cast<const char *>(ptr), first_key_len);
-    ptr += first_key_len;
-
-    // 读取 last_key
-    uint16_t last_key_len;
-    memcpy(&last_key_len, ptr, sizeof(uint16_t));
-    ptr += sizeof(uint16_t);
-    meta.last_key.assign(reinterpret_cast<const char *>(ptr), last_key_len);
-    ptr += last_key_len;
-
-    meta_entries.push_back(meta);
-  }
-
-  // 4. 验证hash
-  uint32_t stored_hash;
-  memcpy(&stored_hash, ptr, sizeof(uint32_t));
-
-  const uint8_t *data_start = metadata.data() + sizeof(uint32_t);
-  const uint8_t *data_end = ptr;
-  size_t data_len = data_end - data_start;
-
-  // 使用与编码时相同的 std::hash 计算哈希值
-  uint32_t computed_hash = std::hash<std::string_view>{}(
-      std::string_view(reinterpret_cast<const char *>(data_start), data_len));
-
-  if (stored_hash != computed_hash) {
-    throw std::runtime_error("Metadata hash mismatch");
-  }
+  size_t curr_hash = 0;
+  std::memcpy(&curr_hash,metadata.data() + off,sizeof(uint32_t));
+  std::hash<std::string_view> hasher;
+  auto str = std::string_view(reinterpret_cast<const char *>(
+      metadata.data()),metadata.size() - sizeof(uint32_t));
+  auto hash = hasher(str);
+  if (hash != curr_hash)throw std::runtime_error("BlockMeta:hash error!!");
 
   return meta_entries;
 }
