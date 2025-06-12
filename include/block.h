@@ -61,6 +61,8 @@ public:
   static std::shared_ptr<Block> decode(const std::vector<uint8_t> &encoded,
                                        bool with_hash = false);
   std::string get_first_key();
+  std::string get_last_key();
+
   size_t get_offset_at(size_t idx) const;
   bool add_entry(const std::string &key, const std::string &value,
                  uint64_t tranc_id, bool force_write);
@@ -68,7 +70,7 @@ public:
                                               uint64_t tranc_id);
 
   size_t size() const;
-  size_t cur_size() const;
+  size_t estimated_size() const;
   bool is_empty() const;
   std::optional<size_t> get_idx_binary(const std::string &key,
                                        uint64_t tranc_id);

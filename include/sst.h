@@ -22,14 +22,13 @@ class SstIterator;
  * ------------------------------------------------------------------------
  * | data block | ... | data block |    metadata   | metadata offset (32) |
  * ------------------------------------------------------------------------
-
+ data block i的长度--> data block(i + 1) offset - data block i
  * 其中, metadata 是一个数组加上一些描述信息, 数组每个元素由一个 BlockMeta
- 编码形成 MetaEntry, MetaEntry 结构如下:
+ 编码形成 MetaEntry, MetaEntry 结构如下(就是BlockMeta):
  * ---------------------------------------------------------------------------------------------------
  * | offset(32) | 1st_key_len(16) | 1st_key(1st_key_len) | last_key_len(16) |
  last_key(last_key_len) |
  * ---------------------------------------------------------------------------------------------------
-
  * Meta Section 的结构如下:
  * ---------------------------------------------------------------
  * | num_entries (32) | MetaEntry | ... | MetaEntry | Hash (32) |
@@ -51,8 +50,8 @@ private:
   uint32_t bloom_offset;
   uint32_t meta_block_offset;
   size_t sst_id;
-  std::string first_key;
-  std::string last_key;
+  std::string first_key; //block[0]->first_key
+  std::string last_key; // block[size - 1]->last_key
   std::shared_ptr<BloomFilter> bloom_filter;
   std::shared_ptr<BlockCache> block_cache;
   uint64_t min_tranc_id_ = UINT64_MAX;
@@ -71,7 +70,7 @@ public:
   std::shared_ptr<Block> read_block(size_t block_idx);
 
   // 找到key所在的block的idx
-  size_t find_block_idx(const std::string &key);
+  int find_block_idx(const std::string &key);
 
   // 根据key返回迭代器
   SstIterator get(const std::string &key, uint64_t tranc_id);
@@ -103,9 +102,14 @@ public:
 class SSTBuilder {
 private:
   Block block;
-  std::string first_key;
+  std::string first_key; // 当前block的first_key和last_key
   std::string last_key;
+  // meta entry的格式:
+  // size_t offset;       块在文件中的偏移量
+  // std::string first_key; 块的第一个key
+  // std::string last_key;块的最后一个key
   std::vector<BlockMeta> meta_entries;
+  // data_block
   std::vector<uint8_t> data;
   size_t block_size;
   std::shared_ptr<BloomFilter> bloom_filter;

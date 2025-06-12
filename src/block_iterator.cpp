@@ -30,7 +30,7 @@ BlockIterator::BlockIterator(std::shared_ptr<Block> b, const std::string &key,
     current_index = idx_opt.value();
     update_current();
   } else {
-    // throw std::runtime_error("BlockIterator:key doesn't exits!");
+    throw std::runtime_error("BlockIterator:key doesn't exits!");
     block.reset();
   }
 }
@@ -49,6 +49,10 @@ BlockIterator &BlockIterator::operator++() {
   if (tranc_id_ == 0) {
     while (current_index < block->size()) {
       current_index++;
+      if (current_index == block->size()) {
+        block.reset();
+        break;
+      }
       const auto &curr_key =
           block->get_key_at(block->get_offset_at(current_index));
       if (prev_keys_.find(curr_key) == prev_keys_.end()) {

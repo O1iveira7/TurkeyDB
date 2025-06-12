@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 
@@ -14,65 +15,36 @@
 // **************************************************
 // SST
 // **************************************************
-
+// SST::open的工就是将SST文件的元信息进行解码和加载，返回一个描述类SST，
+// 你可以将SST看做是SST文件的操作句柄，或者是文件描述符。
 std::shared_ptr<SST> SST::open(size_t sst_id, FileObj file,
                                std::shared_ptr<BlockCache> block_cache) {
+  // 读取文件末尾的元数据块
+  //  meta offset 4B|bloom offset 4B|min tranc 8B|max_tranc 8B
+  // 0. 读取最大和最小的事务id 各为8B todo.先不管
+  // 1. 读取元数据块的偏移量,  2个 uint32_t,todo有一个bloom offset先不管
+  // 分别是 meta 和 bloom 的 offset
+  // 2. 读取 bloom filter todo.
+  // 布隆过滤器偏移量 + 2*uint32_t 的大小小于文件大小表示存在布隆过滤器
+  // 3. 读取并解码元数据块
+  // 4. 设置首尾key
+  // for now .....data block entries|meta entries|meta offset 4B|
   auto sst = std::make_shared<SST>();
   sst->sst_id = sst_id;
   sst->file = std::move(file);
   sst->block_cache = block_cache;
 
-  size_t file_size = sst->file.size();
-  // 读取文件末尾的元数据块
-  if (file_size < sizeof(uint64_t) * 2 + sizeof(uint32_t) * 2) {
-    throw std::runtime_error("Invalid SST file: too small");
-  }
+  auto file_sz = sst->file.size();
+  auto meta_offset = sst->file.read_uint32(file_sz - sizeof(uint32_t));
+  sst->meta_block_offset = meta_offset;
 
-  // 0. 读取最大和最小的事务id
-  auto max_tranc_id =
-      sst->file.read_to_slice(file_size - sizeof(uint64_t), sizeof(uint64_t));
-  memcpy(&sst->max_tranc_id_, max_tranc_id.data(), sizeof(uint64_t));
+  auto metas = sst->file.read_to_slice(
+      meta_offset, file_sz - sizeof(uint32_t) - meta_offset);
+  auto block_meta_vec = BlockMeta::decode_meta_from_slice(metas);
+  sst->meta_entries = std::move(block_meta_vec);
 
-  auto min_tranc_id = sst->file.read_to_slice(file_size - sizeof(uint64_t) * 2,
-                                              sizeof(uint64_t));
-  memcpy(&sst->min_tranc_id_, min_tranc_id.data(), sizeof(uint64_t));
-
-  // 1. 读取元数据块的偏移量, 最后8字节: 2个 uint32_t,
-  // 分别是 meta 和 bloom 的 offset
-
-  auto bloom_offset_bytes = sst->file.read_to_slice(
-      file_size - sizeof(uint64_t) * 2 - sizeof(uint32_t), sizeof(uint32_t));
-  memcpy(&sst->bloom_offset, bloom_offset_bytes.data(), sizeof(uint32_t));
-
-  auto meta_offset_bytes = sst->file.read_to_slice(
-      file_size - sizeof(uint64_t) * 2 - sizeof(uint32_t) * 2,
-      sizeof(uint32_t));
-  memcpy(&sst->meta_block_offset, meta_offset_bytes.data(), sizeof(uint32_t));
-
-  // 2. 读取 bloom filter
-  if (sst->bloom_offset + 2 * sizeof(uint32_t) + 2 * sizeof(uint64_t) <
-      file_size) {
-    // 布隆过滤器偏移量 + 2*uint32_t 的大小小于文件大小
-    // 表示存在布隆过滤器
-    uint32_t bloom_size = file_size - sizeof(uint64_t) * 2 - sst->bloom_offset -
-                          sizeof(uint32_t) * 2;
-    auto bloom_bytes = sst->file.read_to_slice(sst->bloom_offset, bloom_size);
-
-    auto bloom = BloomFilter::decode(bloom_bytes);
-    sst->bloom_filter = std::make_shared<BloomFilter>(std::move(bloom));
-  }
-
-  // 3. 读取并解码元数据块
-  uint32_t meta_size = sst->bloom_offset - sst->meta_block_offset;
-  auto meta_bytes = sst->file.read_to_slice(sst->meta_block_offset, meta_size);
-  sst->meta_entries = BlockMeta::decode_meta_from_slice(meta_bytes);
-
-  // 4. 设置首尾key
-  if (!sst->meta_entries.empty()) {
-    sst->first_key = sst->meta_entries.front().first_key;
-    sst->last_key = sst->meta_entries.back().last_key;
-  }
-
+  sst->first_key = sst->meta_entries.front().first_key;
+  sst->last_key = sst->meta_entries.back().last_key;
   return sst;
 }
 
@@ -88,88 +60,56 @@ std::shared_ptr<SST> SST::create_sst_with_meta_only(
   sst->last_key = last_key;
   sst->meta_block_offset = 0;
   sst->block_cache = block_cache;
-
   return sst;
 }
 
 std::shared_ptr<Block> SST::read_block(size_t block_idx) {
   if (block_idx >= meta_entries.size()) {
-    throw std::out_of_range("Block index out of range");
+    throw std::out_of_range("SST::read_block Block index out of range");
   }
-
-  // 先从缓存中查找
-  if (block_cache != nullptr) {
-    auto cache_ptr = block_cache->get(this->sst_id, block_idx);
-    if (cache_ptr != nullptr) {
-      return cache_ptr;
-    }
-  } else {
-    throw std::runtime_error("Block cache not set");
-  }
-
-  const auto &meta = meta_entries[block_idx];
-  size_t block_size;
-
-  // 计算block大小
+  // the last one hh
+  auto curr_offset = meta_entries[block_idx].offset;
+  size_t curr_sz = 0;
   if (block_idx == meta_entries.size() - 1) {
-    block_size = meta_block_offset - meta.offset;
+    curr_sz = meta_block_offset - curr_offset;
   } else {
-    block_size = meta_entries[block_idx + 1].offset - meta.offset;
+    curr_sz = meta_entries[block_idx + 1].offset - curr_offset;
   }
 
-  // 读取block数据
-  auto block_data = file.read_to_slice(meta.offset, block_size);
-  auto block_res = Block::decode(block_data, true);
-
-  // 更新缓存
-  if (block_cache != nullptr) {
-    block_cache->put(this->sst_id, block_idx, block_res);
-  } else {
-    throw std::runtime_error("Block cache not set");
-  }
-  return block_res;
+  auto block_vec = file.read_to_slice(curr_offset, curr_sz);
+  auto target = Block::decode(block_vec, false);
+  return target;
 }
 
-size_t SST::find_block_idx(const std::string &key) {
-  // 先在布隆过滤器判断key是否存在
-  if (bloom_filter != nullptr && !bloom_filter->possibly_contains(key)) {
-    return -1;
-  }
-
+// TODO: Lab 3.6 二分查找
+// ? 给定一个 `key`, 返回其所属的 `block` 的索引
+// ? 如果没有找到包含该 `key` 的 Block，返回-1
+// 会不会出现这种情况：(先假设没有把)
+// 相同的key被分散到了前后两个block   如BLOCK1:......key1 BLOCK2:key1 .....
+// 会的兄弟会的。。。
+int SST::find_block_idx(const std::string &key) {
+  // todo后面的lab，先不管 先在布隆过滤器判断key是否存在 bloom
   // 二分查找
-  size_t left = 0;
-  size_t right = meta_entries.size();
-
-  while (left < right) {
-    size_t mid = (left + right) / 2;
-    const auto &meta = meta_entries[mid];
-
-    if (key < meta.first_key) {
-      right = mid;
-    } else if (key > meta.last_key) {
-      left = mid + 1;
-    } else {
-      return mid;
+  auto pred = [&](size_t mid) -> bool {
+    auto curr_meta = meta_entries[mid];
+    return key >= curr_meta.first_key && key <= curr_meta.last_key;
+  };
+  size_t left = 0, right = meta_entries.size() - 1;
+  while (left <= right) {
+    int mid = left + (right - left) / 2;  // 防止溢出
+    if (pred(mid)) {
+      return mid;  // 找到目标，返回索引
+    } else if (key < meta_entries[mid].first_key) {
+      right = mid - 1;  // 去右边 [mid+1, right]
+    } else if (key > meta_entries[mid].last_key) {
+      left = mid + 1;  // 去左边 [left, mid-1]
     }
   }
-
-  if (left >= meta_entries.size()) {
-    // 如果没有找到完全匹配的块，返回-1
-    return -1;
-  }
-  return left;
+  return -1;  // 未找到目标
 }
 
 SstIterator SST::get(const std::string &key, uint64_t tranc_id) {
-  if (key < first_key || key > last_key) {
-    return this->end();
-  }
-
-  // 在布隆过滤器判断key是否存在
-  if (bloom_filter != nullptr && !bloom_filter->possibly_contains(key)) {
-    return this->end();
-  }
-
+  // todo后面的lab bloom，先不管  在布隆过滤器判断key是否存在
   return SstIterator(shared_from_this(), key, tranc_id);
 }
 
@@ -183,15 +123,15 @@ size_t SST::sst_size() const { return file.size(); }
 
 size_t SST::get_sst_id() const { return sst_id; }
 
+// todo
 SstIterator SST::begin(uint64_t tranc_id) {
   return SstIterator(shared_from_this(), tranc_id);
 }
 
+// todo
 SstIterator SST::end() {
-  SstIterator res(shared_from_this(), 0);
-  res.m_block_idx = meta_entries.size();
-  res.m_block_it = nullptr;
-  return res;
+  SstIterator iter(shared_from_this(), 0);
+  iter.set_block_idx(meta_entries.size());
 }
 
 std::pair<uint64_t, uint64_t> SST::get_tranc_id_range() const {
@@ -216,129 +156,69 @@ SSTBuilder::SSTBuilder(size_t block_size, bool has_bloom) : block(block_size) {
 
 void SSTBuilder::add(const std::string &key, const std::string &value,
                      uint64_t tranc_id) {
-  // 记录第一个key
-  if (first_key.empty()) {
-    first_key = key;
-  }
-
-  // 在 布隆过滤器 中添加key
-  if (bloom_filter != nullptr) {
-    bloom_filter->add(key);
-  }
-
-  // 记录 事务id 范围
-  max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
+  if (block.is_empty()) first_key = key;
   min_tranc_id_ = std::min(min_tranc_id_, tranc_id);
-
-  bool force_write = key == last_key;
-  // 连续出现相同的 key 必须位于 同一个 block 中
-
-  if (block.add_entry(key, value, tranc_id, force_write)) {
-    // block 满足容量限制, 插入成功
+  max_tranc_id_ = std::max(max_tranc_id_, tranc_id);
+  last_key = key;
+  if (!block.add_entry(key, value, tranc_id, false)) {
     last_key = key;
-    return;
+    block.add_entry(key, value, tranc_id, true);
+    finish_block();
   }
-
-  finish_block(); // 将当前 block 写入
-
-  block.add_entry(key, value, tranc_id, false);
-  first_key = key;
-  last_key = key; // 更新最后一个key
 }
 
 size_t SSTBuilder::estimated_size() const { return data.size(); }
 
+// 写入当前block到data中，更新相关元信息
+// 清空block
 void SSTBuilder::finish_block() {
-  auto old_block = std::move(this->block);
-  auto encoded_block = old_block.encode();
-
+  const auto curr_data = block.encode();
   meta_entries.emplace_back(data.size(), first_key, last_key);
-
-  // 计算block的哈希值
-  auto block_hash = static_cast<uint32_t>(std::hash<std::string_view>{}(
-      std::string_view(reinterpret_cast<const char *>(encoded_block.data()),
-                       encoded_block.size())));
-
-  // 预分配空间并添加数据
-  data.reserve(data.size() + encoded_block.size() +
-               sizeof(uint32_t)); // 加上的是哈希值
-  data.insert(data.end(), encoded_block.begin(), encoded_block.end());
-  data.resize(data.size() + sizeof(uint32_t));
-  memcpy(data.data() + data.size() - sizeof(uint32_t), &block_hash,
-         sizeof(uint32_t));
+  data.insert(data.end(), curr_data.begin(), curr_data.end());
+  block = Block(block_size);
+  first_key.clear();
+  last_key.clear();
 }
 
-std::shared_ptr<SST>
-SSTBuilder::build(size_t sst_id, const std::string &path,
-                  std::shared_ptr<BlockCache> block_cache) {
-  // 完成最后一个block
+std::shared_ptr<SST> SSTBuilder::build(
+    size_t sst_id, const std::string &path,
+    std::shared_ptr<BlockCache> block_cache) {
   if (!block.is_empty()) {
     finish_block();
   }
-
-  // 如果没有数据，抛出异常
   if (meta_entries.empty()) {
-    throw std::runtime_error("Cannot build empty SST");
+    throw std::runtime_error("SSTBuilder::build empty sst can not build!");
+  }
+  auto sst_file = FileObj::create_and_write(path, data);
+  auto meta_block_offset = data.size();
+
+  std::vector<uint8_t> meta_vec;
+  BlockMeta::encode_meta_to_slice(meta_entries, meta_vec);
+  if (!sst_file.append(meta_vec)) {
+    throw std::runtime_error("SSTBuilder:sst file write meta error!");
   }
 
-  // 编码元数据块
-  std::vector<uint8_t> meta_block;
-  BlockMeta::encode_meta_to_slice(meta_entries, meta_block);
-
-  // 计算元数据块的偏移量
-  uint32_t meta_offset = data.size();
-
-  // 构建完整的文件内容
-  // 1. 已有的数据块
-  std::vector<uint8_t> file_content = std::move(data);
-
-  // 2. 添加元数据块
-  file_content.insert(file_content.end(), meta_block.begin(), meta_block.end());
-
-  // 3. 编码布隆过滤器
-  uint32_t bloom_offset = file_content.size();
-  if (bloom_filter != nullptr) {
-    auto bf_data = bloom_filter->encode();
-    file_content.insert(file_content.end(), bf_data.begin(), bf_data.end());
+  std::vector<uint8_t> offset_u8;
+  const char *off_sz_p = reinterpret_cast<const char *>(&meta_block_offset);
+  offset_u8.insert(offset_u8.end(), off_sz_p, off_sz_p + sizeof(uint32_t));
+  if (!sst_file.append(offset_u8)) {
+    throw std::runtime_error("SSTBuilder:sst file write meta offset error!");
   }
+  //std::cout << sst_file.size();
+  auto sst = std::make_shared<SST>();
+  sst->file = std::move(sst_file);
+  // WTF????
+  auto sz = sst->file.size();
+  sst->meta_entries = std::move(meta_entries);
+  sst->bloom_offset = 0;  // todo
+  sst->meta_block_offset = meta_block_offset;
+  sst->sst_id = sst_id;
+  sst->first_key = sst->meta_entries.front().first_key;  // ???
+  sst->last_key = sst->meta_entries.back().last_key;
+  sst->bloom_filter = nullptr;  // todo
+  sst->block_cache = block_cache;
+  sst->min_tranc_id_ = min_tranc_id_;
+  sst->max_tranc_id_ = max_tranc_id_;
 
-  auto extra_len = sizeof(uint32_t) * 2 + sizeof(uint64_t) * 2;
-  file_content.resize(file_content.size() + extra_len);
-  // sizeof(uint32_t) * 2  表示: 元数据块的偏移量, 布隆过滤器偏移量,
-  // sizeof(uint64_t) * 2  表示: 最小事务id,, 最大事务id
-
-  // 4. 添加元数据块偏移量
-  memcpy(file_content.data() + file_content.size() - extra_len, &meta_offset,
-         sizeof(uint32_t));
-
-  // 5. 添加布隆过滤器偏移量
-  memcpy(file_content.data() + file_content.size() - extra_len +
-             sizeof(uint32_t),
-         &bloom_offset, sizeof(uint32_t));
-
-  // 6. 添加最大和最小的事务id
-  memcpy(file_content.data() + file_content.size() - sizeof(uint64_t) * 2,
-         &min_tranc_id_, sizeof(uint64_t));
-  memcpy(file_content.data() + file_content.size() - sizeof(uint64_t),
-         &max_tranc_id_, sizeof(uint64_t));
-
-  // 创建文件
-  FileObj file = FileObj::create_and_write(path, file_content);
-
-  // 返回SST对象
-  auto res = std::make_shared<SST>();
-
-  res->sst_id = sst_id;
-  res->file = std::move(file);
-  res->first_key = meta_entries.front().first_key;
-  res->last_key = meta_entries.back().last_key;
-  res->meta_block_offset = meta_offset;
-  res->bloom_filter = this->bloom_filter;
-  res->bloom_offset = bloom_offset;
-  res->meta_entries = std::move(meta_entries);
-  res->block_cache = block_cache;
-  res->max_tranc_id_ = max_tranc_id_;
-  res->min_tranc_id_ = min_tranc_id_;
-
-  return res;
+  return sst;
 }

@@ -38,8 +38,6 @@ add_library(TurkeyDB STATIC
         src/db_impl.h
         src/db_impl.cpp
         src/engine.cpp
-        src/file.h
-        src/file.cpp
         src/files.cpp
         src/iterator.cpp
         src/mem_table_impl.h

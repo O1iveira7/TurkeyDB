@@ -27,6 +27,7 @@ size_t FileObj::size() const { return m_file->size(); }
 void FileObj::set_size(size_t size) { m_size = size; }
 
 void FileObj::del_file() { m_file->remove(); }
+
 FileObj FileObj::create_and_write(const std::string &path,
                                   std::vector<uint8_t> buf) {
   FileObj file_obj;
@@ -36,7 +37,7 @@ FileObj FileObj::create_and_write(const std::string &path,
 
   // 同步到磁盘
   file_obj.m_file->sync();
-
+  file_obj.set_size(file_obj.m_file->size());
   return std::move(file_obj);
 }
 
@@ -47,7 +48,7 @@ FileObj FileObj::open(const std::string &path, bool create) {
   if (!file_obj.m_file->open(path, create)) {
     throw std::runtime_error("Failed to open file: " + path);
   }
-
+  file_obj.set_size(file_obj.m_file->size());
   return std::move(file_obj);
 }
 

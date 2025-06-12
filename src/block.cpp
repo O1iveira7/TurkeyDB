@@ -33,7 +33,7 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
                                      bool with_hash) {
   size_t snallest = sizeof(uint16_t) * 3 + sizeof(uint64_t);
   if (encoded.size() < snallest)
-    throw std::runtime_error("encoded is too small!");
+    throw std::runtime_error("Block::decode encoded is too small!");
   auto cnt_pos = encoded.size() - sizeof(uint16_t);
   if (with_hash) {
     cnt_pos -= sizeof(uint32_t);
@@ -45,7 +45,7 @@ std::shared_ptr<Block> Block::decode(const std::vector<uint8_t> &encoded,
     if (block_hash !=
         hasher(static_cast<std::string_view>(reinterpret_cast<const char *>(
             encoded.data(), encoded.size() - sizeof(uint32_t))))) {
-      throw std::runtime_error("block has been brocken!");
+      throw std::runtime_error("block has been broken!");
     }
   }
   uint16_t cnt = 0;
@@ -82,8 +82,20 @@ std::string Block::get_first_key() {
   return key;
 }
 
+std::string Block::get_last_key() {
+  if (data.empty() || offsets.empty()) return "";
+  auto last_offset = get_offset_at(offsets.size() - 1);
+  uint16_t key_len;
+  std::memcpy(&key_len, data.data() + last_offset, sizeof(uint16_t));
+  // 读取key
+  std::string key(
+      reinterpret_cast<char *>(data.data() + sizeof(uint16_t) + last_offset),
+      key_len);
+  return key;
+}
+
 size_t Block::get_offset_at(size_t idx) const {
-  if (idx > offsets.size()) {
+  if (idx >= offsets.size()) {
     throw std::runtime_error("idx out of offsets range");
   }
   return offsets[idx];
@@ -327,8 +339,8 @@ Block::get_monotony_predicate_iters(
   }
   auto start_p =
       std::make_shared<BlockIterator>(shared_from_this(), start_idx, tranc_id);
-  auto end_p =
-      std::make_shared<BlockIterator>(shared_from_this(), end_idx + 1, tranc_id);
+  auto end_p = std::make_shared<BlockIterator>(shared_from_this(), end_idx + 1,
+                                               tranc_id);
 
   return std::make_optional(std::make_pair(start_p, end_p));
 }
@@ -343,7 +355,7 @@ Block::Entry Block::get_entry_at(size_t offset) const {
 
 size_t Block::size() const { return offsets.size(); }
 
-size_t Block::cur_size() const {
+size_t Block::estimated_size() const {
   return data.size() + offsets.size() * sizeof(uint16_t) + sizeof(uint16_t);
 }
 

@@ -89,7 +89,7 @@ TEST_F(BlockMetaTest, SpecialCharTest) {
   EXPECT_EQ(decoded_metas[0].last_key, std::string("value\0with\0null", 14));
 }
 
-// 测试错误处理
+// 测试错误处理 todo hash还有问题
 TEST_F(BlockMetaTest, ErrorHandlingTest) {
   // 测试解码无效数据
   std::vector<uint8_t> invalid_data = {1, 2, 3}; // 太短
