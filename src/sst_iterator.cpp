@@ -10,10 +10,44 @@
 //   0: 谓词
 //   >0: 不满足谓词, 需要向右移动
 //   <0: 不满足谓词, 需要向左移动
-
 std::optional<std::pair<SstIterator, SstIterator>> sst_iters_monotony_predicate(
     std::shared_ptr<SST> sst, uint64_t tranc_id,
-    std::function<int(const std::string &)> predicate) {}
+    std::function<int(const std::string &)> predicate) {
+  std::optional<SstIterator> final_beg = std::nullopt;
+  std::optional<SstIterator> final_end = std::nullopt;
+  for (size_t i = 0; i < sst->num_blocks(); i++) {
+    auto curr_meta = sst->meta_entries[i];
+    // 我们从第一个block开始找，所有key都是有序的
+    // 对于每个block，可能有下面的几种情况：
+    // 1. 整个block中的所有key都不满足，继续向右
+    // 2. 从block中的某个键开始满足
+    // 3. 整个block都满足
+    // 4. 从某个key开始都不满足
+    // 5. block中间一段满足
+    // 因为sst所有的key都是有序的，我们遍历的顺序是从左到右边
+    // 如果first_key < 0 就意味着所有要找的key都在左边
+    // 如果last_key > 0 就意味着当前的key
+    if (predicate(curr_meta.first_key) < 0) break;
+    auto curr_block = sst->read_block(i);
+    auto curr_block_ret =
+        curr_block->get_monotony_predicate_iters(tranc_id, predicate);
+    if (curr_block_ret.has_value()) {
+      auto [curr_beg, curr_end] = curr_block_ret.value();
+      if (!final_beg.has_value()) {
+        SstIterator tmp(sst, tranc_id);
+        tmp.set_block_idx(i);
+        tmp.set_block_it(curr_beg);
+        final_beg = std::make_optional(tmp);
+      }
+      SstIterator tmp(sst, tranc_id);
+      tmp.set_block_idx(i);
+      tmp.set_block_it(curr_end);
+      final_end = std::make_optional(tmp);
+    }
+  }
+  if (!final_beg.has_value() || !final_end.has_value()) return std::nullopt;
+  return {std::make_pair(final_beg.value(), final_end.value())};
+}
 
 SstIterator::SstIterator(std::shared_ptr<SST> sst, uint64_t tranc_id)
     : m_sst(sst), m_block_idx(0), m_block_it(nullptr), max_tranc_id_(tranc_id) {
@@ -87,7 +121,6 @@ BaseIterator &SstIterator::operator++() {
     } else {
       auto block = m_sst->read_block(m_block_idx);
       m_block_it = std::make_shared<BlockIterator>(block, 0, max_tranc_id_);
-      m_block_idx = 0;
       cached_value = m_block_it->operator*();
     }
   }
