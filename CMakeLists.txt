@@ -52,6 +52,8 @@ add_library(TurkeyDB STATIC
         src/transation.cpp
         src/two_merge_iterator.cpp
         src/wal.cpp
+        include/level_iterator.h
+        src/level_iterator.h.cpp
 )
 
 # 设置 TurkeyDB 库的头文件搜索路径
@@ -90,6 +92,7 @@ add_executable(
         test/test_memtable.cpp
         test/test_sst.cpp
         test/test_blockmeta.cpp
+        test/test_lsm.cpp
 )
 
 target_link_libraries(

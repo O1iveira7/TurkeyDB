@@ -86,9 +86,10 @@ void SstIterator::seek_first() {
 // 通过BlockIterator实现在Block中的定位。l
 void SstIterator::seek(const std::string &key) {
   m_block_idx = m_sst->find_block_idx(key);
-  if (m_block_idx == -1)
-    throw std::runtime_error(
-        "SstIterator::seek can not find this key in blocks");
+  if (m_block_idx == -1) {
+    m_block_it = nullptr;
+    return;
+  }
   auto block = m_sst->read_block(m_block_idx);
   m_block_it = std::make_shared<BlockIterator>(BlockIterator(block, key, 0));
   if (!cached_value.has_value()) {
@@ -98,14 +99,14 @@ void SstIterator::seek(const std::string &key) {
 
 std::string SstIterator::key() {
   if (!m_block_it) {
-    throw std::runtime_error("Iterator is invalid");
+    throw std::runtime_error("SstIterator::key():iterator is invalid");
   }
   return (*m_block_it)->first;
 }
 
 std::string SstIterator::value() {
   if (!m_block_it) {
-    throw std::runtime_error("Iterator is invalid");
+    throw std::runtime_error("SstIterator::value():iterator is invalid");
   }
   return (*m_block_it)->second;
 }
@@ -142,6 +143,7 @@ bool SstIterator::operator!=(const BaseIterator &other) const {
   return !(*this == other);
 }
 
+// todo.
 SstIterator::value_type SstIterator::operator*() const {}
 
 IteratorType SstIterator::get_type() const { return IteratorType::SstIterator; }

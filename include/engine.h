@@ -16,9 +16,13 @@
 class LSMEngine {
 public:
   std::string data_dir;
+  // memtable自己实现了并发控制
   MemTable memtable;
+  // level -> 当前level内的sst id
   std::unordered_map<size_t, std::deque<size_t>> level_sst_ids;
+  // sst id -> sst meta
   std::unordered_map<size_t, std::shared_ptr<SST>> ssts;
+  // lock while read/write sst file
   std::shared_mutex ssts_mtx;
   std::shared_ptr<BlockCache> block_cache;
   size_t next_sst_id = 0;

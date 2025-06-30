@@ -41,6 +41,7 @@ class MemTable {
   MemTable();
   ~MemTable();
 
+  // >= LSM_PER_MEM_SIZE_LIMIT 会进行frozen
   void put(const std::string &key, const std::string &value, uint64_t tranc_id);
   void put_batch(const std::vector<std::pair<std::string, std::string>> &kvs,
                  uint64_t tranc_id);
@@ -70,7 +71,7 @@ class MemTable {
 
  private:
   std::shared_ptr<SkipList> current_table;
-  std::list<std::shared_ptr<SkipList>> frozen_tables;
+  std::list<std::shared_ptr<SkipList>> frozen_tables;// 方便随时插入和删除
   size_t frozen_bytes;
   std::shared_mutex frozen_mtx;  // 冻结表的锁
   std::shared_mutex cur_mtx;     // 活跃表的锁

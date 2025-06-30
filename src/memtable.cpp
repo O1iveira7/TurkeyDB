@@ -47,10 +47,10 @@ void MemTable::put_batch(
   std::unique_lock lock1(cur_mtx);
   for (const auto &[k, v] : kvs) {
     put_(k, v, tranc_id);
-  }
-  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
-    std::unique_lock lock2(frozen_mtx);
-    frozen_cur_table_();
+    if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+      std::unique_lock lock2(frozen_mtx);
+      frozen_cur_table_();
+    }
   }
 }
 
@@ -62,6 +62,7 @@ SkipListIterator MemTable::cur_get_(const std::string &key, uint64_t tranc_id) {
 
 SkipListIterator MemTable::frozen_get_(const std::string &key,
                                        uint64_t tranc_id) {
+  // 新的跳表排在前面
   for (const auto &curr : frozen_tables) {
     auto res = curr->get(key, tranc_id);
     if (res.is_valid()) return res;
@@ -96,9 +97,9 @@ std::vector<
 MemTable::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
   std::vector<
       std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-      results;
+      results; // result 是个vector...类型声明有一点吓人...
   results.reserve(keys.size());
-
+  // std::optional<std::pair<std::string, uint64_t> 指的是val可能不存在，存在的话就是val，tranc id
   // 1. 先获取活跃表的锁
   std::shared_lock<std::shared_mutex> slock1(cur_mtx);
   for (const auto &key : keys) {
@@ -173,11 +174,12 @@ void MemTable::remove_batch(const std::vector<std::string> &keys,
   std::unique_lock lock1(cur_mtx);
   for (const auto &k : keys) {
     remove_(k, tranc_id);
+    if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
+      std::unique_lock lock2(frozen_mtx);
+      frozen_cur_table_();
+    }
   }
-  if (current_table->get_size() >= LSM_PER_MEM_SIZE_LIMIT) {
-    std::unique_lock lock2(frozen_mtx);
-    frozen_cur_table_();
-  }
+
 }
 
 void MemTable::clear() {
@@ -187,7 +189,7 @@ void MemTable::clear() {
   current_table->clear();
 }
 
-// 将最老的 memtable 写入 SST, 并返回控制类
+// 将最老的 memtable 写入磁盘生成新的SST，并返回SST控制类
 std::shared_ptr<SST> MemTable::flush_last(
     SSTBuilder &builder, std::string &sst_path, size_t sst_id,
     std::shared_ptr<BlockCache> block_cache) {
@@ -222,6 +224,7 @@ std::shared_ptr<SST> MemTable::flush_last(
     min_tranc_id = std::min(t, min_tranc_id);
     builder.add(k, v, t);
   }
+  // 将sst写入文件并返回SST描述类
   auto sst = builder.build(sst_id, sst_path, block_cache);
 
   return sst;
@@ -258,6 +261,7 @@ size_t MemTable::get_total_size() {
 
 // todo:这边的level是啥
 HeapIterator MemTable::begin(uint64_t tranc_id) {
+  // 用所有kv对构造heap iterator
   std::shared_lock slock1(cur_mtx);
   std::shared_lock slock2(frozen_mtx);
   std::vector<SearchItem> search_items_vec;
@@ -309,7 +313,7 @@ HeapIterator MemTable::iters_preffix(const std::string &preffix,
       ++frozen_beg;
     }
   }
-
+  // heap iterator 会去重
   return {search_items_vec, tranc_id};
 }
 

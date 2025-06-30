@@ -9,74 +9,49 @@
 #include <utility>
 #include <vector>
 
-#include "consts.h"
 #include "concact_iterator.h"
+#include "consts.h"
 #include "sst.h"
 #include "sst_iterator.h"
 
 // *********************** LSMEngine ***********************
+// sst的文件路径格式为: data_dir/sst_{id}.level sst_id格式化为32位数字
 LSMEngine::LSMEngine(std::string path) : data_dir(path) {
   // 初始化 block_cahce
+  // TODO: Lab 4.2 引擎初始化
+  using namespace std::filesystem;
   block_cache = std::make_shared<BlockCache>(LSMmm_BLOCK_CACHE_CAPACITY,
                                              LSMmm_BLOCK_CACHE_K);
-
-  // 创建数据目录
-  if (!std::filesystem::exists(path)) {
-    std::filesystem::create_directory(path);
+  if (!exists(path)) {
+    create_directory(path);
   } else {
-    // 如果目录存在，则检查是否有 sst 文件并加载
-    for (const auto &entry : std::filesystem::directory_iterator(path)) {
-      if (!entry.is_regular_file()) {
-        continue;
+    size_t max_sst_id = 0;
+    size_t max_sst_level = 0;
+    for (const auto &entry : directory_iterator(path)) {
+      if (entry.path().filename().string().starts_with("sst_")) {
+        auto curr_file = FileObj::open(entry.path().string(), false);
+        auto file_name = entry.path().filename().stem().string();
+        auto curr_sst_id = std::stoul(file_name.substr(4));
+
+        auto curr_sst_level =
+            std::stoul(entry.path().extension().string().substr(1));
+
+        max_sst_id = std::max(max_sst_id, curr_sst_id);
+        max_sst_level = std::max(max_sst_level, curr_sst_level);
+
+        auto curr_sst =
+            SST::open(curr_sst_id, std::move(curr_file), block_cache);
+
+        ssts[curr_sst_id] = curr_sst;
+        level_sst_ids[curr_sst_level].push_back(curr_sst_id);
       }
-
-      std::string filename = entry.path().filename().string();
-      // SST文件名格式为: sst_{id}.level
-      if (!filename.starts_with("sst_")) {
-        continue;
-      }
-
-      // 找到 . 的位置
-      size_t dot_pos = filename.find('.');
-      if (dot_pos == std::string::npos || dot_pos == filename.length() - 1) {
-        continue;
-      }
-
-      // 提取 level
-      std::string level_str =
-          filename.substr(dot_pos + 1, filename.length() - 1 - dot_pos);
-      if (level_str.empty()) {
-        continue;
-      }
-      size_t level = std::stoull(level_str);
-
-      // 提取SST ID
-      std::string id_str = filename.substr(4, dot_pos - 4); // 4 for "sst_"
-      if (id_str.empty()) {
-        continue;
-      }
-      size_t sst_id = std::stoull(id_str);
-
-      // 加载SST文件, 初始化时需要加写锁
-      std::unique_lock<std::shared_mutex> lock(ssts_mtx); // 写锁
-
-      next_sst_id = std::max(sst_id, next_sst_id); // 记录目前最大的 sst_id
-      cur_max_level = std::max(level, cur_max_level); // 记录目前最大的 level
-      std::string sst_path = get_sst_path(sst_id, level);
-      auto sst = SST::open(sst_id, FileObj::open(sst_path, false), block_cache);
-      ssts[sst_id] = sst;
-
-      level_sst_ids[level].push_back(sst_id);
     }
 
-    next_sst_id++; // 现有的最大 sst_id 自增后才是下一个分配的 sst_id
-
-    for (auto &[level, sst_id_list] : level_sst_ids) {
-      std::sort(sst_id_list.begin(), sst_id_list.end());
-      if (level == 0) {
-        // 其他 level 的 sst 都是没有重叠的, 且 id 小的表示 key
-        // 排序在前面的部分, 不需要 reverse
-        std::reverse(sst_id_list.begin(), sst_id_list.end());
+    // todo 其它level的文件优先级可能也要处理
+    for (int i = 0; i < level_sst_ids.size(); i++) {
+      std::ranges::sort(level_sst_ids[i]);
+      if (i == 0) {
+        std::ranges::reverse(level_sst_ids[0]);
       }
     }
   }
@@ -84,257 +59,139 @@ LSMEngine::LSMEngine(std::string path) : data_dir(path) {
 
 LSMEngine::~LSMEngine() = default;
 
-std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::get(const std::string &key, uint64_t tranc_id) {
+std::optional<std::pair<std::string, uint64_t>> LSMEngine::get(
+    const std::string &key, uint64_t tranc_id) {
+  // todo
   // 1. 先查找 memtable
-  auto mem_res = memtable.get(key, tranc_id);
-  if (mem_res.is_valid()) {
-    if (mem_res.get_value().size() > 0) {
-      // 值存在且不为空（没有被删除）
-      return std::pair<std::string, uint64_t>{mem_res.get_value(),
-                                              mem_res.get_tranc_id()};
-    } else {
-      // memtable返回的kv的value为空值表示被删除了
+  // 值存在且不为空（没有被删除）
+  // memtable返回的kv的value为空值表示被删除了
+  // 2. l0 sst中查询
+  //  中的 sst_id 是按从大到小的顺序排列,
+  // sst_id 越大, 表示是越晚刷入的, 优先查询
+  // 值存在且不为空（没有被删除）
+  // 空值表示被删除了
+  // 3. 其他level的sst中查询
+  // 二分查询
+  // 如果sst_id在中, 则在sst中查询
+  // 值存在且不为空（没有被删除）
+  // 空值表示被删除了
+
+  // 现在mem table中查找
+  auto mem_ret = memtable.get(key, tranc_id);
+  if (mem_ret.is_valid()) {
+    auto kv = *mem_ret;
+    auto curr_tranc_id = mem_ret.get_tranc_id();
+    if (kv.second.empty()) {
       return std::nullopt;
     }
+    return {{kv.second, curr_tranc_id}};
   }
 
-  // 2. l0 sst中查询
-  std::shared_lock<std::shared_mutex> rlock(ssts_mtx); // 读锁
-
-  for (auto &sst_id : level_sst_ids[0]) {
-    //  中的 sst_id 是按从大到小的顺序排列,
-    // sst_id 越大, 表示是越晚刷入的, 优先查询
-    auto &sst = ssts[sst_id];
-    auto sst_iterator = sst->get(key, tranc_id);
-    if (sst_iterator != sst->end()) {
-      if ((sst_iterator)->second.size() > 0) {
-        // 值存在且不为空（没有被删除）
-        return std::pair<std::string, uint64_t>{sst_iterator->second,
-                                                sst_iterator.get_tranc_id()};
-      } else {
-        // 空值表示被删除了
-        return std::nullopt;
-      }
-    }
-  }
-
-  // 3. 其他level的sst中查询
-  for (size_t level = 1; level <= cur_max_level; level++) {
-    std::deque<size_t> l_sst_ids = level_sst_ids[level];
-    // 二分查询
-    size_t left = 0;
-    size_t right = l_sst_ids.size();
-    while (left < right) {
-      size_t mid = left + (right - left) / 2;
-      auto &sst = ssts[l_sst_ids[mid]];
-      if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
-        // 如果sst_id在中, 则在sst中查询
-        auto sst_iterator = sst->get(key, tranc_id);
-        if (sst_iterator.is_valid()) {
-          if ((sst_iterator)->second.size() > 0) {
-            // 值存在且不为空（没有被删除）
-            return std::pair<std::string, uint64_t>{
-                sst_iterator->second, sst_iterator.get_tranc_id()};
-          } else {
-            // 空值表示被删除了
-            return std::nullopt;
-          }
-        } else {
-          break;
-        }
-      } else if (sst->get_last_key() < key) {
-        left = mid + 1;
-      } else {
-        right = mid;
-      }
-    }
-  }
-
-  return std::nullopt;
+  // sst
+  auto res = sst_get_(key, tranc_id);
+  return res;
 }
 
-std::vector<std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
-LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id)
-{
-    // 1. 先从 memtable 中批量查找
-    auto results = memtable.get_batch(keys, tranc_id);
+std::vector<
+    std::pair<std::string, std::optional<std::pair<std::string, uint64_t>>>>
+LSMEngine::get_batch(const std::vector<std::string> &keys, uint64_t tranc_id) {
+  // TODO: Lab 4.2 批量查询
+  // 1. 先从 memtable 中批量查找
+  // 2. 如果所有键都在memtable 中找到，直接返回
+  // 2. 从 L0 层 SST 文件中批量查找未命中的键
+  // 值存在且不为空
+  // 空值表示被删除
+  // 停止继续查找
+  // 3. 从其他层级 SST 文件中批量查找未命中的键
+  // 已找到，跳过
+  // 二分查找确定键可能所在的 SST 文件
+  // 如果键在当前 SST 文件范围内，则在 SST 中查找
+  // 值存在且不为空
+  // 空值表示被删除
+  // 停止继续查找
 
-    // 2. 如果所有键都在memtable 中找到，直接返回
-    bool need_search_sst= false;
-    for (const auto &[key, value] : results) {
-        if (!value.has_value()) {
-            // 需要查找
-            need_search_sst = true;
-            break;
-        }
-    }
-
-    if (!need_search_sst) 
-    {
-        return results; // 不需要查sst
-    }
-
-    // 2. 从 L0 层 SST 文件中批量查找未命中的键
-    std::shared_lock<std::shared_mutex> rlock(ssts_mtx); // 加读锁
-    for (auto &[key, value] : results)
-    {
-        for (auto &sst_id : level_sst_ids[0])
-        {
-            auto &sst = ssts[sst_id];
-            auto sst_iterator = sst->get(key, tranc_id);
-            if (sst_iterator != sst->end())
-            {
-                if (sst_iterator->second.size() > 0)
-                {
-                    // 值存在且不为空
-                    value = std::make_pair(sst_iterator->second, sst_iterator.get_tranc_id());
-                }
-                else
-                {
-                    // 空值表示被删除
-                    value = std::nullopt;
-                }
-                break; // 停止继续查找
-            }
-        }
-    }
-
-    // 3. 从其他层级 SST 文件中批量查找未命中的键
-    for (size_t level = 1; level <= cur_max_level; level++)
-    {
-        std::deque<size_t> l_sst_ids = level_sst_ids[level];
-
-        for (auto &[key, value] : results)
-        {
-            if (value.has_value()) // 已找到，跳过
-            {
-                continue;
-            }
-
-            // 二分查找确定键可能所在的 SST 文件
-            size_t left = 0;
-            size_t right = l_sst_ids.size();
-            while (left < right)
-            {
-                size_t mid = left + (right - left) / 2;
-                auto &sst = ssts[l_sst_ids[mid]];
-
-                if (sst->get_first_key() <= key && key <= sst->get_last_key())
-                {
-                    // 如果键在当前 SST 文件范围内，则在 SST 中查找
-                    auto sst_iterator = sst->get(key, tranc_id);
-                    if (sst_iterator.is_valid())
-                    {
-                        if (sst_iterator->second.size() > 0)
-                        {
-                            // 值存在且不为空
-                            value = std::make_pair(sst_iterator->second, sst_iterator.get_tranc_id());
-                        }
-                        else
-                        {
-                            // 空值表示被删除
-                            value = std::nullopt;
-                        }
-                    }
-                    break; // 停止继续查找
-                }
-                else if (sst->get_last_key() < key)
-                {
-                    left = mid + 1;
-                }
-                else
-                {
-                    right = mid;
-                }
-            }
-        }
-    }
-
-    return results;
+  auto res = memtable.get_batch(keys, tranc_id);
+  for (auto &curr : res) {
+    if (curr.second.has_value()) continue;
+    curr.second = sst_get_(curr.first, tranc_id);
+  }
+  return res;
 }
-
-std::optional<std::pair<std::string, uint64_t>>
-LSMEngine::sst_get_(const std::string &key, uint64_t tranc_id) {
-
+// TODO: Lab 4.2 sst 内部查询
+// 返回key对应的optional，<val,tranc>
+std::optional<std::pair<std::string, uint64_t>> LSMEngine::sst_get_(
+    const std::string &key, uint64_t tranc_id) {
   // 1. l0 sst中查询
-  for (auto &sst_id : level_sst_ids[0]) {
-    //  中的 sst_id 是按从大到小的顺序排列,
-    // sst_id 越大, 表示是越晚刷入的, 优先查询
-    auto sst = ssts[sst_id];
-    auto sst_iterator = sst->get(key, tranc_id);
-    if (sst_iterator != sst->end()) {
-      if ((sst_iterator)->second.size() > 0) {
-        // 值存在且不为空（没有被删除）
-        return std::pair<std::string, uint64_t>{sst_iterator->second,
-                                                sst_iterator.get_tranc_id()};
-      } else {
-        // 空值表示被删除了
-        return std::nullopt;
-      }
-    }
-  }
-
+  //  中的 sst_id 是按从大到小的顺序排列,
+  // sst_id 越大, 表示是越晚刷入的, 优先查询
+  // 值存在且不为空（没有被删除）
+  // 空值表示被删除了
   // 2. 其他level的sst中查询
-  for (size_t level = 1; level <= cur_max_level; level++) {
-    std::deque<size_t> l_sst_ids = level_sst_ids[level];
-    // 二分查询
-    size_t left = 0;
-    size_t right = l_sst_ids.size();
-    while (left < right) {
-      size_t mid = left + (right - left) / 2;
-      auto sst = ssts[l_sst_ids[mid]];
-      if (sst->get_first_key() <= key && key <= sst->get_last_key()) {
-        // 如果sst_id在中, 则在sst中查询
-        auto sst_iterator = sst->get(key, tranc_id);
-        if (sst_iterator.is_valid()) {
-          if ((sst_iterator)->second.size() > 0) {
-            // 值存在且不为空（没有被删除）
-            return std::pair<std::string, uint64_t>{
-                sst_iterator->second, sst_iterator.get_tranc_id()};
-          } else {
-            // 空值表示被删除了
-            return std::nullopt;
-          }
-        } else {
-          break;
+  // 二分查询
+  // 如果sst_id在中, 则在sst中查询
+  // 值存在且不为空（没有被删除）
+  // 空值表示被删除了
+  // 假设sst已经按照优先级拍好了序
+  // start from level 0
+  auto search_curr_level =
+      [&](size_t i) -> std::optional<std::pair<std::string, uint64_t>> {
+    const auto &curr_level_vec = level_sst_ids[i];
+    for (const auto &curr_sst_id : curr_level_vec) {
+      const auto &curr_sst = ssts[curr_sst_id];
+      auto res = curr_sst->get(key, tranc_id);
+      if (res.is_valid()) {
+        auto val = res.value();
+        if (val.size()) {
+          return {{val, res.get_tranc_id()}};
         }
-      } else if (sst->get_last_key() < key) {
-        left = mid + 1;
-      } else {
-        right = mid;
       }
+      // todo.
+      return std::nullopt;
     }
-  }
+  };
 
+  for (int i = 0; i < level_sst_ids.size(); i++) {
+    auto res = search_curr_level(i);
+    if (res.has_value()) return res;
+  }
   return std::nullopt;
 }
 
 uint64_t LSMEngine::put(const std::string &key, const std::string &value,
                         uint64_t tranc_id) {
+  // TODO: Lab 4.1 插入
+  // ? 由于 put 操作可能触发 flush
+  // ? 如果触发了 flush 则返回新刷盘的 sst 的 id
+  // ? 在没有实现  flush 的情况下，你返回 0即可
   memtable.put(key, value, tranc_id);
-
-  // 如果 memtable 太大，需要刷新到磁盘
   if (memtable.get_total_size() >= LSM_TOL_MEM_SIZE_LIMIT) {
     return flush();
   }
-  return 0;
+  return 0;  // todo ?
 }
 
 uint64_t LSMEngine::put_batch(
     const std::vector<std::pair<std::string, std::string>> &kvs,
     uint64_t tranc_id) {
+  // TODO: Lab 4.1 批量插入
+  // ? 由于 put 操作可能触发 flush
+  // ? 如果触发了 flush 则返回新刷盘的 sst 的 id
+  // ? 在没有实现  flush 的情况下，你返回 0即可
   memtable.put_batch(kvs, tranc_id);
-  // 如果 memtable 太大，需要刷新到磁盘
+  // todo 有没有可能kvs过去庞大，flush一个sst后剩余容量依然 >=
+  // LSM_TOL_MEM_SIZE_LIMIT
   if (memtable.get_total_size() >= LSM_TOL_MEM_SIZE_LIMIT) {
     return flush();
   }
-  return 0;
+  return 0;  // todo ?
 }
 uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
-  // 在 LSM 中，删除实际上是插入一个空值
+  // TODO: Lab 4.1 删除
+  // ? 在 LSM 中，删除实际上是插入一个空值
+  // ? 由于 put 操作可能触发 flush
+  // ? 如果触发了 flush 则返回新刷盘的 sst 的 id
+  // ? 在没有实现  flush 的情况下，你返回 0即可
   memtable.remove(key, tranc_id);
-  // 如果 memtable 太大，需要刷新到磁盘
   if (memtable.get_total_size() >= LSM_TOL_MEM_SIZE_LIMIT) {
     return flush();
   }
@@ -343,8 +200,12 @@ uint64_t LSMEngine::remove(const std::string &key, uint64_t tranc_id) {
 
 uint64_t LSMEngine::remove_batch(const std::vector<std::string> &keys,
                                  uint64_t tranc_id) {
+  // TODO: Lab 4.1 批量删除
+  // ? 在 LSM 中，删除实际上是插入一个空值
+  // ? 由于 put 操作可能触发 flush
+  // ? 如果触发了 flush 则返回新刷盘的 sst 的 id
+  // ? 在没有实现  flush 的情况下，你返回 0即可
   memtable.remove_batch(keys, tranc_id);
-  // 如果 memtable 太大，需要刷新到磁盘
   if (memtable.get_total_size() >= LSM_TOL_MEM_SIZE_LIMIT) {
     return flush();
   }
@@ -369,39 +230,21 @@ void LSMEngine::clear() {
   }
 }
 
+// 按这个意思就是一个对于level 0来说一个skiplist上的数据对应一个sst喽?
 uint64_t LSMEngine::flush() {
-  if (memtable.get_total_size() == 0) {
-    return 0;
-  }
+  // TODO: Lab 4.1 刷盘形成sst文件
+  auto curr_sst_id = next_sst_id++;
+  auto path = get_sst_path(curr_sst_id, 0);
+  SSTBuilder builder(LSM_BLOCK_SIZE, true);
 
-  std::unique_lock<std::shared_mutex> lock(ssts_mtx); // 写锁
+  std::unique_lock lock(ssts_mtx);
+  auto flushed_sst =
+      memtable.flush_last(builder, path, curr_sst_id, block_cache);
+  level_sst_ids[0].push_front(curr_sst_id);
+  ssts[curr_sst_id] = flushed_sst;
 
-  // 1. 先判断 l0 sst 是否数量超限需要concat到 l1
-  if (level_sst_ids.find(0) != level_sst_ids.end() &&
-      level_sst_ids[0].size() >= LSM_SST_LEVEL_RATIO) {
-    full_compact(0);
-  }
-
-  // 2. 创建新的 SST ID
-  // 链表头部存储的是最新刷入的sst, 其sst_id最大
-  size_t new_sst_id = next_sst_id++;
-
-  // 3. 准备 SSTBuilder
-  SSTBuilder builder(LSM_BLOCK_SIZE, true); // 4KB block size
-
-  // 4. 将 memtable 中最旧的表写入 SST
-  auto sst_path = get_sst_path(new_sst_id, 0);
-  auto new_sst =
-      memtable.flush_last(builder, sst_path, new_sst_id, block_cache);
-
-  // 5. 更新内存索引
-  ssts[new_sst_id] = new_sst;
-
-  // 6. 更新 sst_ids
-  level_sst_ids[0].push_front(new_sst_id);
-
-  // 返回新刷入的 sst 的最大的 tranc_id
-  return new_sst->get_tranc_id_range().second;
+  // todo return what?
+  return 0;
 }
 
 std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
@@ -415,7 +258,6 @@ std::string LSMEngine::get_sst_path(size_t sst_id, size_t target_level) {
 std::optional<std::pair<TwoMergeIterator, TwoMergeIterator>>
 LSMEngine::lsm_iters_monotony_predicate(
     uint64_t tranc_id, std::function<int(const std::string &)> predicate) {
-
   //  先从 memtable 中查询
   auto mem_result = memtable.iters_monotony_predicate(tranc_id, predicate);
 
@@ -473,7 +315,7 @@ LSMEngine::lsm_iters_monotony_predicate(
 
 TwoMergeIterator LSMEngine::begin(uint64_t tranc_id) {
   std::vector<SstIterator> iter_vec;
-  std::shared_lock<std::shared_mutex> lock(ssts_mtx); // 读锁
+  std::shared_lock<std::shared_mutex> lock(ssts_mtx);  // 读锁
   for (auto &sst_id : level_sst_ids[0]) {
     auto sst = ssts[sst_id];
     for (auto iter = sst->begin(tranc_id); iter != sst->end(); ++iter) {
@@ -538,9 +380,8 @@ void LSMEngine::full_compact(size_t src_level) {
             level_sst_ids[src_level + 1].end());
 }
 
-std::vector<std::shared_ptr<SST>>
-LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
-                              std::vector<size_t> &l1_ids) {
+std::vector<std::shared_ptr<SST>> LSMEngine::full_l0_l1_compact(
+    std::vector<size_t> &l0_ids, std::vector<size_t> &l1_ids) {
   // TODO: 这里需要补全的是对已经完成事务的删除
   std::vector<SstIterator> l0_iters;
   std::vector<std::shared_ptr<SST>> l1_ssts;
@@ -567,9 +408,8 @@ LSMEngine::full_l0_l1_compact(std::vector<size_t> &l0_ids,
                            LSM_PER_MEM_SIZE_LIMIT * LSM_SST_LEVEL_RATIO, 1);
 }
 
-std::vector<std::shared_ptr<SST>>
-LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
-                               std::vector<size_t> &ly_ids, size_t level_y) {
+std::vector<std::shared_ptr<SST>> LSMEngine::full_common_compact(
+    std::vector<size_t> &lx_ids, std::vector<size_t> &ly_ids, size_t level_y) {
   // TODO 需要补全已完成事务的滤除
   std::vector<std::shared_ptr<SST>> lx_iters;
   std::vector<std::shared_ptr<SST>> ly_iters;
@@ -596,28 +436,25 @@ LSMEngine::full_common_compact(std::vector<size_t> &lx_ids,
                            level_y);
 }
 
-std::vector<std::shared_ptr<SST>>
-LSMEngine::gen_sst_from_iter(BaseIterator &iter, size_t target_sst_size,
-                             size_t target_level) {
+std::vector<std::shared_ptr<SST>> LSMEngine::gen_sst_from_iter(
+    BaseIterator &iter, size_t target_sst_size, size_t target_level) {
   // TODO: 这里需要补全的是对已经完成事务的删除
-
   std::vector<std::shared_ptr<SST>> new_ssts;
   auto new_sst_builder = SSTBuilder(LSM_BLOCK_SIZE, true);
   while (iter.is_valid() && !iter.is_end()) {
-
     new_sst_builder.add((*iter).first, (*iter).second, 0);
     ++iter;
 
     if (new_sst_builder.estimated_size() >= target_sst_size) {
-      size_t sst_id = next_sst_id++; // TODO: 后续优化并发性
+      size_t sst_id = next_sst_id++;  // TODO: 后续优化并发性
       std::string sst_path = get_sst_path(sst_id, target_level);
       auto new_sst = new_sst_builder.build(sst_id, sst_path, this->block_cache);
       new_ssts.push_back(new_sst);
-      new_sst_builder = SSTBuilder(LSM_BLOCK_SIZE, true); // 重置builder
+      new_sst_builder = SSTBuilder(LSM_BLOCK_SIZE, true);  // 重置builder
     }
   }
   if (new_sst_builder.estimated_size() > 0) {
-    size_t sst_id = next_sst_id++; // TODO: 后续优化并发性
+    size_t sst_id = next_sst_id++;  // TODO: 后续优化并发性
     std::string sst_path = get_sst_path(sst_id, target_level);
     auto new_sst = new_sst_builder.build(sst_id, sst_path, this->block_cache);
     new_ssts.push_back(new_sst);
@@ -669,30 +506,25 @@ std::optional<std::string> LSM::get(const std::string &key) {
   return std::nullopt;
 }
 
-std::vector<std::pair<std::string, std::optional<std::string>>>
-LSM::get_batch(const std::vector<std::string> &keys)
-{
-    // 1. 获取事务ID
-    auto tranc_id = tran_manager_->getNextTransactionId();
+std::vector<std::pair<std::string, std::optional<std::string>>> LSM::get_batch(
+    const std::vector<std::string> &keys) {
+  // 1. 获取事务ID
+  auto tranc_id = tran_manager_->getNextTransactionId();
 
-    // 2. 调用 engine 的批量查询接口
-    auto batch_results = engine->get_batch(keys, tranc_id);
+  // 2. 调用 engine 的批量查询接口
+  auto batch_results = engine->get_batch(keys, tranc_id);
 
-    // 3. 构造最终结果
-    std::vector<std::pair<std::string, std::optional<std::string>>> results;
-    for (const auto &[key, value] : batch_results)
-    {
-        if (value.has_value())
-        {
-            results.emplace_back(key, value->first); // 提取值部分
-        }
-        else
-        {
-            results.emplace_back(key, std::nullopt); // 键不存在
-        }
+  // 3. 构造最终结果
+  std::vector<std::pair<std::string, std::optional<std::string>>> results;
+  for (const auto &[key, value] : batch_results) {
+    if (value.has_value()) {
+      results.emplace_back(key, value->first);  // 提取值部分
+    } else {
+      results.emplace_back(key, std::nullopt);  // 键不存在
     }
+  }
 
-    return results;
+  return results;
 }
 
 void LSM::put(const std::string &key, const std::string &value) {
